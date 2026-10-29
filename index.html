@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Busca Ativa NSP/CCIH – Hospital dos Pescadores</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+<!-- Firebase (mesma versão do sistema da UTI) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+
+<link rel="stylesheet" href="styles.css?v=20261029a">
+</head>
+<body>
+
+<!-- ═════════════ LOGIN ═════════════ -->
+<div id="t-login" class="tela tela-centro">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="logo-slot" style="margin-bottom:1rem;"></div>
+      <span class="login-badge">BUSCA ATIVA · NSP / CCIH</span>
+      <h1>PREFEITURA MUNICIPAL DO NATAL<br>HOSPITAL DOS PESCADORES</h1>
+      <p>Núcleo de Segurança do Paciente · CCIH</p>
+    </div>
+    <form id="form-login" autocomplete="on" onsubmit="event.preventDefault(); fazerLogin(); return false;">
+      <div class="login-field">
+        <label for="li-email">E-mail institucional</label>
+        <input type="email" id="li-email" name="username" placeholder="nome@hospesc.com" autocomplete="username">
+      </div>
+      <div class="login-field">
+        <label for="li-senha">Senha</label>
+        <input type="password" id="li-senha" name="password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn-login" id="btn-entrar" type="submit">Entrar</button>
+    </form>
+    <div class="login-err" id="login-err"></div>
+    <p class="login-msg">Use o mesmo login do sistema da UTI. Sem acesso? Peça ao NSP para cadastrar seu e-mail.</p>
+  </div>
+</div>
+
+<!-- ═════════════ FIREBASE INDISPONÍVEL ═════════════ -->
+<div id="t-config" class="tela tela-centro">
+  <div class="config-banner">
+    <h3>⚙️ Não foi possível conectar ao Firebase</h3>
+    <p>Verifique a internet e recarregue a página. Se o problema continuar, confira a configuração em <code>config.js</code>.</p>
+    <p>Para treinamento ou teste, dá para usar o modo local: os dados ficam só neste aparelho e não vão para a nuvem.</p>
+    <button class="btn btn-pri" onclick="usarModoLocal()">Continuar em modo local (teste)</button>
+  </div>
+</div>
+
+<!-- ═════════════ TROCA DE SENHA ═════════════ -->
+<div id="t-trocasenha" class="tela tela-centro">
+  <div class="login-card">
+    <div class="login-logo">
+      <span class="login-badge">SEGURANÇA</span>
+      <h1>Definir senha</h1>
+      <p id="ts-sub">Defina uma nova senha de acesso.</p>
+    </div>
+    <form autocomplete="on" onsubmit="event.preventDefault(); confirmarTrocaSenha(); return false;">
+      <div class="login-field"><label for="ts-nova">Nova senha</label><input type="password" id="ts-nova" placeholder="mínimo 6 caracteres" autocomplete="new-password"></div>
+      <div class="login-field"><label for="ts-conf">Confirmar nova senha</label><input type="password" id="ts-conf" placeholder="repita a senha" autocomplete="new-password"></div>
+      <button class="btn-login" id="btn-trocar-senha" type="submit">Salvar nova senha</button>
+    </form>
+    <button class="btn btn-sec btn-sm" id="btn-cancelar-troca" style="display:none;margin-top:8px;width:100%;justify-content:center;" onclick="irPainel()">Cancelar</button>
+    <div class="login-err" id="ts-err"></div>
+  </div>
+</div>
+
+<!-- ═════════════ PAINEL DE LEITOS ═════════════ -->
+<div id="t-painel" class="tela tela-larga">
+  <div class="app-header" style="border-radius:var(--r) var(--r) 0 0;">
+    <div><h2>Busca Ativa · NSP / CCIH</h2><small>Hospital dos Pescadores · PS e Clínica Médica</small></div>
+    <div class="header-right">
+      <span class="badge badge-local" id="badge-local" style="display:none;">MODO LOCAL</span>
+      <span class="badge-user" id="badge-user" onclick="fazerLogout()" title="Sair">Sair</span>
+    </div>
+  </div>
+  <div class="painel-corpo">
+    <div class="painel-topo">
+      <div class="fl painel-data">
+        <label for="p-data">Data da busca</label>
+        <input type="date" id="p-data" onchange="mudarDataRef(this.value)">
+      </div>
+      <div class="resumo-chips" id="resumo-chips"></div>
+    </div>
+
+    <div class="setor-tabs" id="setor-tabs"></div>
+
+    <div class="painel-filtros">
+      <label class="ci"><input type="checkbox" id="f-so-sorteados" onchange="soSorteados=this.checked;renderPainel()"> Só leitos sorteados</label>
+      <label class="ci"><input type="checkbox" id="f-so-pendentes" onchange="soPendentes=this.checked;renderPainel()"> Só pendentes de visita</label>
+    </div>
+
+    <div id="painel-grid"></div>
+
+    <div class="btn-row painel-acoes">
+      <button class="btn btn-sm btn-amostra" onclick="sortearAmostra()">🎲 Sortear amostra do dia</button>
+      <button class="btn btn-sm btn-censo" onclick="abrirImportarCenso()">📥 Importar censo</button>
+      <button class="btn btn-sm btn-sec" onclick="irIndicadores()">📈 Indicadores</button>
+      <button class="btn btn-sm btn-nsp" onclick="abrirFormularioNSP()">🛡 Notificação NSP</button>
+      <button class="btn btn-sm btn-sec so-admin" onclick="abrirUsuarios()">👥 Usuários</button>
+      <button class="btn btn-sm btn-sec so-nuvem" onclick="abrirTrocaSenha()">🔑 Trocar senha</button>
+      <button class="btn btn-sm btn-sec" onclick="carregarPainel()">🔄 Atualizar</button>
+    </div>
+    <div class="sync-status" id="sync-status"><span class="sync-dot" id="sync-dot"></span><span id="sync-txt"></span></div>
+  </div>
+</div>
+
+<!-- ═════════════ VISITA (BUSCA ATIVA DO LEITO) ═════════════ -->
+<div id="t-visita" class="tela">
+  <div class="app-header">
+    <div><h2 id="v-titulo">Busca ativa</h2><small id="v-sub"></small></div>
+    <div class="header-right">
+      <span class="badge badge-sorteado" id="v-badge-sorteado" style="display:none;">🎲 AMOSTRA</span>
+      <span class="badge-user" onclick="voltarPainel()">← Leitos</span>
+    </div>
+  </div>
+  <div class="card">
+
+    <!-- IDENTIFICAÇÃO (dados do modelo de busca ativa, sem dados clínicos) -->
+    <div class="secao">
+      <div class="secao-t" style="justify-content:space-between;">
+        <span>Leito e paciente</span>
+        <button type="button" class="btn-mini" onclick="abrirAdmissao(visitaBedId)">✏ Editar admissão</button>
+      </div>
+      <div class="secao-c">
+        <div class="ident-grid" id="v-ident"></div>
+        <div class="fl"><label for="v-enf">Enfermeiro(a) do plantão</label><input type="text" id="v-enf" class="uc-live" placeholder="Nome do(a) enfermeiro(a) responsável" list="dl-enfermeiros"></div>
+        <datalist id="dl-enfermeiros"></datalist>
+      </div>
+    </div>
+
+    <!-- SEGURANÇA DO PACIENTE -->
+    <div class="secao">
+      <div class="secao-t">🛡 Segurança do paciente (NSP)</div>
+      <div class="secao-c">
+        <div class="linha-pergunta">
+          <span class="sub-t">Alergia</span>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-alergia" value="Sim" onchange="onMudaContexto()"> Sim</label>
+            <label class="ri"><input type="radio" name="v-alergia" value="Não" onchange="onMudaContexto()"> Não</label>
+          </div>
+        </div>
+        <div class="linha-pergunta">
+          <span class="sub-t">Paciente em isolamento</span>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-isol" value="Não" onchange="onMudaContexto()"> Não</label>
+            <label class="ri"><input type="radio" name="v-isol" value="Vigilância" onchange="onMudaContexto()"> Vigilância</label>
+            <label class="ri"><input type="radio" name="v-isol" value="Contato" onchange="onMudaContexto()"> Contato</label>
+            <label class="ri"><input type="radio" name="v-isol" value="Respiratório" onchange="onMudaContexto()"> Respiratório</label>
+          </div>
+        </div>
+        <div id="v-nsp-itens"></div>
+      </div>
+    </div>
+
+    <!-- DISPOSITIVOS (colunas do modelo: SVD/ELIM · CVC/AVP · VM/FILTRO/O2) -->
+    <div class="secao">
+      <div class="secao-t">🩺 Dispositivos</div>
+      <div class="secao-c">
+        <div class="disp-blk">
+          <div class="disp-t">SVD / Eliminação urinária</div>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-elim" value="Espontânea" onchange="onMudaDisp()"> Espontânea</label>
+            <label class="ri"><input type="radio" name="v-elim" value="Fralda" onchange="onMudaDisp()"> Fralda</label>
+            <label class="ri"><input type="radio" name="v-elim" value="SVD" onchange="onMudaDisp()"> SVD</label>
+            <label class="ri"><input type="radio" name="v-elim" value="SVA" onchange="onMudaDisp()"> SVA (alívio)</label>
+            <label class="ri"><input type="radio" name="v-elim" value="Uripen" onchange="onMudaDisp()"> Uripen</label>
+          </div>
+          <div class="disp-datas" id="wrap-svd" style="display:none;">
+            <div class="fl"><label for="v-svd-data">Instalação da SVD</label><input type="date" id="v-svd-data" onchange="atualizarDias()"><span class="dias-tag" id="d-svd"></span></div>
+          </div>
+        </div>
+
+        <div class="disp-blk">
+          <div class="disp-t">Cateter venoso central</div>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-cvc" value="Não" onchange="onMudaDisp()"> Não</label>
+            <label class="ri"><input type="radio" name="v-cvc" value="Sim" onchange="onMudaDisp()"> Sim</label>
+          </div>
+          <div class="disp-datas" id="wrap-cvc" style="display:none;">
+            <div class="fl"><label for="v-cvc-tipo">Tipo</label>
+              <select id="v-cvc-tipo"><option value="">–</option><option>CVC</option><option>CDL (hemodiálise)</option><option>PICC</option></select>
+            </div>
+            <div class="fl"><label for="v-cvc-data">Instalação</label><input type="date" id="v-cvc-data" onchange="atualizarDias()"><span class="dias-tag" id="d-cvc"></span></div>
+          </div>
+        </div>
+
+        <div class="disp-blk">
+          <div class="disp-t">Acesso venoso periférico (AVP)</div>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-avp" value="Não" onchange="onMudaDisp()"> Não</label>
+            <label class="ri"><input type="radio" name="v-avp" value="Sim" onchange="onMudaDisp()"> Sim</label>
+          </div>
+          <div class="disp-datas" id="wrap-avp" style="display:none;">
+            <div class="fl"><label for="v-avp-data">Data da punção</label><input type="date" id="v-avp-data" onchange="atualizarDias()"><span class="dias-tag" id="d-avp"></span></div>
+          </div>
+        </div>
+
+        <div class="disp-blk">
+          <div class="disp-t">VM / Filtro / O₂</div>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-o2" value="AA" onchange="onMudaDisp()"> AA</label>
+            <label class="ri"><input type="radio" name="v-o2" value="CN" onchange="onMudaDisp()"> CN</label>
+            <label class="ri"><input type="radio" name="v-o2" value="MV" onchange="onMudaDisp()"> MV</label>
+            <label class="ri"><input type="radio" name="v-o2" value="MNR" onchange="onMudaDisp()"> MNR</label>
+            <label class="ri"><input type="radio" name="v-o2" value="TQT" onchange="onMudaDisp()"> TQT</label>
+            <label class="ri"><input type="radio" name="v-o2" value="TOT" onchange="onMudaDisp()"> VM / TOT</label>
+          </div>
+          <div class="disp-datas" id="wrap-va" style="display:none;">
+            <div class="fl"><label for="v-va-data">Instalação (TOT/TQT)</label><input type="date" id="v-va-data" onchange="atualizarDias()"><span class="dias-tag" id="d-va"></span></div>
+            <div class="fl"><label for="v-filtro-data">Data do filtro</label><input type="date" id="v-filtro-data" onchange="atualizarDias()"><span class="dias-tag" id="d-filtro"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CCIH -->
+    <div class="secao">
+      <div class="secao-t">🧫 Check-list CCIH (bundles)</div>
+      <div class="secao-c">
+        <div id="v-bundles"></div>
+      </div>
+    </div>
+
+    <!-- NOTIFICAÇÕES -->
+    <div class="secao">
+      <div class="secao-t">⚠ Notificações</div>
+      <div class="secao-c">
+        <p class="hint">Marque os eventos/incidentes identificados nesta visita.</p>
+        <div class="cg" id="v-eventos"></div>
+        <div class="linha-pergunta" id="wrap-notificado" style="display:none;">
+          <span class="sub-t">Já notificado ao NSP?</span>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-notificado" value="Sim"> Sim</label>
+            <label class="ri"><input type="radio" name="v-notificado" value="Não"> Não</label>
+          </div>
+          <button type="button" class="btn-mini btn-mini-nsp" onclick="abrirFormularioNSP()">🛡 Abrir formulário do NSP</button>
+        </div>
+        <textarea id="v-notif-obs" style="min-height:60px;" placeholder="Descrição breve (sem dados clínicos desnecessários)"></textarea>
+      </div>
+    </div>
+
+    <div class="secao">
+      <div class="secao-t">Observações da visita</div>
+      <div class="secao-c"><textarea id="v-obs" style="min-height:60px;" placeholder="Orientações dadas à equipe, pendências..."></textarea></div>
+    </div>
+
+    <div class="visita-rodape">
+      <div class="visita-score" id="v-score"></div>
+      <div class="btn-row">
+        <button class="btn btn-sec" onclick="voltarPainel()">Cancelar</button>
+        <button class="btn btn-ok" id="btn-salvar-visita" onclick="salvarVisita()">✓ Salvar busca ativa</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════ INDICADORES ═════════════ -->
+<div id="t-indicadores" class="tela tela-larga">
+  <div class="app-header" style="border-radius:var(--r) var(--r) 0 0;">
+    <div><h2>📈 Indicadores da busca ativa</h2><small>NSP / CCIH · Hospital dos Pescadores</small></div>
+    <div class="header-right"><span class="badge-user" onclick="irPainel()">← Leitos</span></div>
+  </div>
+  <div class="painel-corpo">
+    <div class="ind-filtros">
+      <div class="ind-filtro-g">
+        <label for="ind-periodo">Período</label>
+        <select id="ind-periodo" onchange="document.getElementById('ind-custom').style.display=this.value==='custom'?'flex':'none'">
+          <option value="0">Hoje</option>
+          <option value="7">Últimos 7 dias</option>
+          <option value="30" selected>Últimos 30 dias</option>
+          <option value="90">Últimos 90 dias</option>
+          <option value="custom">Personalizado</option>
+        </select>
+      </div>
+      <div class="ind-filtro-g" id="ind-custom" style="display:none;">
+        <label for="ind-de">De</label><input type="date" id="ind-de">
+        <label for="ind-ate">Até</label><input type="date" id="ind-ate">
+      </div>
+      <div class="ind-filtro-g">
+        <label for="ind-setor">Setor</label>
+        <select id="ind-setor"></select>
+      </div>
+      <button class="btn btn-pri btn-sm" onclick="renderIndicadores()">🔄 Atualizar</button>
+      <button class="btn btn-sm btn-ok" onclick="exportarCSV()">⬇ Exportar CSV</button>
+    </div>
+    <div id="ind-conteudo"><div class="ind-vazio">Escolha o período e clique em Atualizar.</div></div>
+  </div>
+</div>
+
+<!-- ═════════════ USUÁRIOS (admin) ═════════════ -->
+<div id="t-usuarios" class="tela">
+  <div class="app-header" style="border-radius:var(--r) var(--r) 0 0;">
+    <div><h2>👥 Usuários da busca ativa</h2><small>Acesso ao app NSP / CCIH</small></div>
+    <div class="header-right"><span class="badge-user" onclick="irPainel()">← Leitos</span></div>
+  </div>
+  <div class="painel-corpo">
+    <div class="secao">
+      <div class="secao-t">Adicionar usuário</div>
+      <div class="secao-c">
+        <div class="fl"><label for="u-nome">Nome completo</label><input type="text" id="u-nome" class="uc-live" placeholder="Ex: MARIA DA SILVA SANTOS"></div>
+        <div class="dc">
+          <div class="fl"><label for="u-email">E-mail</label><input type="email" id="u-email" placeholder="nome@hospesc.com"></div>
+          <div class="fl"><label for="u-funcao">Função</label>
+            <select id="u-funcao"><option>NSP</option><option>CCIH</option><option>NEP</option><option>Enfermagem</option><option>Outro</option></select>
+          </div>
+        </div>
+        <div class="dc">
+          <div class="fl"><label for="u-role">Perfil</label><select id="u-role"><option value="membro">Membro</option><option value="admin">Administrador</option></select></div>
+          <div class="fl"><label for="u-senha">Senha provisória</label><input type="text" id="u-senha" value="hospesc123"></div>
+        </div>
+        <p class="hint">Se o e-mail já tiver login no sistema da UTI, a conta existente é reaproveitada e a pessoa entra com a senha que já usa.</p>
+        <div><button class="btn btn-pri" id="btn-add-user" onclick="adicionarUsuario()">+ Criar acesso</button></div>
+        <div class="login-err" id="u-err"></div>
+      </div>
+    </div>
+    <div class="secao" style="margin-top:1rem;">
+      <div class="secao-t">Usuários cadastrados</div>
+      <div class="secao-c"><div id="usuarios-lista"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════ MODAL ADMISSÃO ═════════════ -->
+<div class="overlay" id="modal-adm">
+  <div class="modal">
+    <div class="modal-header"><h3 id="adm-titulo">Admissão</h3><button class="modal-close" onclick="fecharModal('modal-adm')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body">
+      <div class="aviso-censo" id="adm-aviso-censo" style="display:none;"></div>
+      <div class="fl"><label for="m-pac">Paciente</label><input type="text" id="m-pac" class="uc-live" placeholder="Nome completo"></div>
+      <div class="dc">
+        <div class="fl"><label for="m-adm">Data de admissão</label><input type="date" id="m-adm"></div>
+        <div class="fl"><label for="m-proc">Procedência</label><input type="text" id="m-proc" class="uc-live" list="dl-procedencias" placeholder="Ex: PS - HOSPESC"></div>
+      </div>
+      <datalist id="dl-procedencias"></datalist>
+      <div class="fl"><label for="m-hd">HD</label><input type="text" id="m-hd" class="uc-live" placeholder="Hipótese diagnóstica (como no modelo da busca ativa)"></div>
+      <div class="dc">
+        <div class="fl"><label for="m-alergia">Alergia</label><select id="m-alergia"><option value="">Não informado</option><option>Sim</option><option>Não</option></select></div>
+        <div class="fl"><label for="m-isol">Isolamento</label><select id="m-isol"><option>Não</option><option>Vigilância</option><option>Contato</option><option>Respiratório</option></select></div>
+      </div>
+      <div class="fl"><label for="m-o2">Suporte O₂ / VM</label>
+        <select id="m-o2"><option value="">–</option><option>AA</option><option>CN</option><option>MV</option><option>MNR</option><option>TQT</option><option value="TOT">VM / TOT</option></select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-sec" onclick="fecharModal('modal-adm')">Cancelar</button>
+        <button class="btn btn-ok" id="btn-salvar-adm" onclick="salvarAdmissao()">Admitir</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════ MODAL SAÍDA ═════════════ -->
+<div class="overlay" id="modal-saida">
+  <div class="modal">
+    <div class="modal-header modal-header-verm"><h3 id="saida-titulo">Saída do paciente</h3><button class="modal-close" onclick="fecharModal('modal-saida')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body">
+      <p id="saida-pac" class="modal-destaque"></p>
+      <div class="fl"><label for="s-tipo">Tipo de saída</label>
+        <select id="s-tipo"><option>Alta</option><option>Transferência externa</option><option>Transferência para UTI</option><option>Óbito</option><option>Evasão</option><option>Outro</option></select>
+      </div>
+      <div class="fl"><label for="s-data">Data</label><input type="date" id="s-data"></div>
+      <div class="fl"><label for="s-obs">Observação</label><input type="text" id="s-obs" placeholder="Opcional"></div>
+      <div class="btn-row">
+        <button class="btn btn-sec" onclick="fecharModal('modal-saida')">Cancelar</button>
+        <button class="btn btn-imp" onclick="confirmarSaida()">Registrar saída e liberar leito</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════ MODAL TRANSFERÊNCIA INTERNA ═════════════ -->
+<div class="overlay" id="modal-transf">
+  <div class="modal">
+    <div class="modal-header modal-header-roxo"><h3>↔ Transferir de leito</h3><button class="modal-close" onclick="fecharModal('modal-transf')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body">
+      <p id="transf-pac" class="modal-destaque"></p>
+      <div class="fl"><label for="t-destino">Leito de destino</label><select id="t-destino"></select></div>
+      <p class="hint">Os dispositivos e as datas de instalação acompanham o paciente.</p>
+      <div class="btn-row">
+        <button class="btn btn-sec" onclick="fecharModal('modal-transf')">Cancelar</button>
+        <button class="btn btn-pri" onclick="confirmarTransferencia()">Transferir</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════ MODAL BLOQUEIO ═════════════ -->
+<div class="overlay" id="modal-bloqueio">
+  <div class="modal">
+    <div class="modal-header" id="bl-header-wrap"><h3 id="bl-titulo">Bloquear leito</h3><button class="modal-close" onclick="fecharModal('modal-bloqueio')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body">
+      <div class="fl" id="bl-motivo-wrap"><label for="bl-motivo">Motivo</label><input type="text" id="bl-motivo" class="uc-live" placeholder="Ex.: REFORMA"></div>
+      <div class="fl"><label for="bl-data">A partir de</label><input type="date" id="bl-data"></div>
+      <div class="btn-row">
+        <button class="btn btn-sec" onclick="fecharModal('modal-bloqueio')">Cancelar</button>
+        <button class="btn btn-pri" id="bl-confirmar" onclick="confirmarBloqueio()">Confirmar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════ MODAL IMPORTAR CENSO ═════════════ -->
+<div class="overlay" id="modal-censo">
+  <div class="modal modal-largo">
+    <div class="modal-header modal-header-verde"><h3>📥 Importar censo do NIR</h3><button class="modal-close" onclick="fecharModal('modal-censo')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body" id="censo-corpo"></div>
+  </div>
+</div>
+
+<!-- ═════════════ MODAL AMOSTRA ═════════════ -->
+<div class="overlay" id="modal-amostra">
+  <div class="modal modal-largo">
+    <div class="modal-header modal-header-laranja"><h3>🎲 Amostra do dia</h3><button class="modal-close" onclick="fecharModal('modal-amostra')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body" id="amostra-corpo"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="loading-overlay" id="loading-overlay"><div class="spinner"></div><div class="loading-msg" id="loading-msg">Carregando...</div></div>
+
+<script src="config.js?v=20261029a"></script>
+<script src="app.js?v=20261029a"></script>
+</body>
+</html>
