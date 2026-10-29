@@ -20,18 +20,20 @@
   window.NSP_CONFIG = {
 
     // ── FIREBASE ─────────────────────────────────────────────────────────────
-    // Mesmo projeto do sistema da UTI (mesmos logins). Os dados deste app ficam
-    // em coleções próprias: usuarios_nsp, nsp_leitos, nsp_visitas,
-    // nsp_movimentos, nsp_amostras e nsp_config.
-    // Para usar um projeto separado, troque os valores abaixo.
+    // Projeto PRÓPRIO e independente (logins e banco só deste sistema).
+    // Crie em console.firebase.google.com → Configurações do projeto →
+    // Seus apps → App da Web, e cole aqui os valores (passo a passo no README).
     FIREBASE: {
-      apiKey: "AIzaSyB00a198BLBKXyvfCXmbZgbY9lAPsp_G6c",
-      authDomain: "evolucaouti.firebaseapp.com",
-      projectId: "evolucaouti",
-      storageBucket: "evolucaouti.firebasestorage.app",
-      messagingSenderId: "168481656346",
-      appId: "1:168481656346:web:4af8e67600eeabb4fdcba3"
+      apiKey: "COLE_AQUI",
+      authDomain: "SEU-PROJETO.firebaseapp.com",
+      projectId: "SEU-PROJETO",
+      storageBucket: "SEU-PROJETO.firebasestorage.app",
+      messagingSenderId: "COLE_AQUI",
+      appId: "COLE_AQUI"
     },
+
+    // Coleção do sistema no Firestore. Se mudar o nome aqui, mude também no firestore.rules.
+    COLECAO: 'busca_ativa_nsp',
 
     // ── APPS SCRIPT (Google Drive / Planilhas) ───────────────────────────────
     // Deixe vazio até publicar o Code.gs. Com a URL preenchida, cada visita
@@ -45,7 +47,7 @@
     // Mantenha esta lista igual à função nspAdminsFixos() do firestore.rules.
     ADMIN_EMAILS: ['tercio@hospesc.com.br'],
 
-    // Formulário de notificação do NSP (o mesmo usado no sistema da UTI)
+    // Formulário de notificação do NSP (Google Forms)
     NSP_FORM_URL: 'https://docs.google.com/forms/d/e/1FAIpQLSfpuEkVu7xLfbX8aUYa1rG-Oo77w3ae9DDBFvSRxvAomWAYgQ/viewform',
 
     // ── AMOSTRAGEM ───────────────────────────────────────────────────────────
@@ -54,7 +56,7 @@
     // leitos ocupados de cada setor (amostra estratificada, sorteio aleatório).
     AMOSTRA: { z: 1.96, confianca: '95%', margemErro: 0.10, p: 0.5 },
 
-    // ── SETORES E LEITOS (espelho do censo do NIR, sem a UTI) ────────────────
+    // ── SETORES E LEITOS (espelho do censo do NIR; PS e Clínica Médica) ────────────────
     // "censo" = rótulo da coluna B do censo usado na importação.
     SETORES: [
       { id: 'ps', nome: 'Pronto Socorro', sigla: 'PS', grupos: [
@@ -107,7 +109,7 @@
       { id: 'alcool_gel',       grupo: 'Higiene das mãos',          texto: 'Preparação alcoólica disponível no ponto de assistência', tipo: 'cnc' }
     ],
 
-    // ── CHECK-LIST CCIH (bundles) — mesmos itens do sistema da UTI ───────────
+    // ── CHECK-LIST CCIH (bundles) ───────────
     // disp: dispositivo que ativa o bundle (cvc | avp | svd | via_aerea)
     // criterio 'sim' → SIM é aderente | 'nao' → NÃO é aderente | 'info' → só registro
     // na: true → aceita "N/A" (não entra no cálculo)

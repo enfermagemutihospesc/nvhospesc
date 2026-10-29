@@ -1,4 +1,4 @@
-/* Base visual: extraída do styles.css do sistema da UTI (Hospital dos Pescadores) */
+/* Busca Ativa NSP/CCIH – Hospital dos Pescadores */
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
  
 :root{
@@ -292,7 +292,7 @@ textarea{width:100%;resize:vertical;min-height:80px;line-height:1.6;padding:8px 
 .iras-score-bar-fill.bar-na{background:#bbb;}
 
 /* ════════════════════════════════════════════════════════════════════════
-   BUSCA ATIVA NSP / CCIH – complementos ao visual do sistema da UTI
+   BUSCA ATIVA NSP / CCIH – componentes específicos
    ════════════════════════════════════════════════════════════════════════ */
 .tela{display:none;}
 .tela.ativa{display:block;}

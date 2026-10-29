@@ -9,7 +9,7 @@
 <title>Busca Ativa NSP/CCIH – Hospital dos Pescadores</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 
-<!-- Firebase (mesma versão do sistema da UTI) -->
+<!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
@@ -39,15 +39,15 @@
       <button class="btn-login" id="btn-entrar" type="submit">Entrar</button>
     </form>
     <div class="login-err" id="login-err"></div>
-    <p class="login-msg">Use o mesmo login do sistema da UTI. Sem acesso? Peça ao NSP para cadastrar seu e-mail.</p>
+    <p class="login-msg">Sem acesso? Peça ao NSP para cadastrar seu e-mail.</p>
   </div>
 </div>
 
 <!-- ═════════════ FIREBASE INDISPONÍVEL ═════════════ -->
 <div id="t-config" class="tela tela-centro">
   <div class="config-banner">
-    <h3>⚙️ Não foi possível conectar ao Firebase</h3>
-    <p>Verifique a internet e recarregue a página. Se o problema continuar, confira a configuração em <code>config.js</code>.</p>
+    <h3 id="cfg-titulo">⚙️ Não foi possível conectar ao Firebase</h3>
+    <p id="cfg-texto">Verifique a internet e recarregue a página. Se o problema continuar, confira a configuração em <code>config.js</code>.</p>
     <p>Para treinamento ou teste, dá para usar o modo local: os dados ficam só neste aparelho e não vão para a nuvem.</p>
     <button class="btn btn-pri" onclick="usarModoLocal()">Continuar em modo local (teste)</button>
   </div>
@@ -315,7 +315,7 @@
           <div class="fl"><label for="u-role">Perfil</label><select id="u-role"><option value="membro">Membro</option><option value="admin">Administrador</option></select></div>
           <div class="fl"><label for="u-senha">Senha provisória</label><input type="text" id="u-senha" value="hospesc123"></div>
         </div>
-        <p class="hint">Se o e-mail já tiver login no sistema da UTI, a conta existente é reaproveitada e a pessoa entra com a senha que já usa.</p>
+        <p class="hint">No primeiro acesso a pessoa entra com a senha provisória e é obrigada a criar a própria senha.</p>
         <div><button class="btn btn-pri" id="btn-add-user" onclick="adicionarUsuario()">+ Criar acesso</button></div>
         <div class="login-err" id="u-err"></div>
       </div>

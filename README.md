@@ -1,6 +1,6 @@
 # Busca Ativa NSP / CCIH – Hospital dos Pescadores
 
-App web para a visita diária do NSP e da CCIH no Pronto Socorro e na Clínica Médica. Usa a mesma arquitetura do sistema da UTI: GitHub Pages, Firebase (login e Firestore) e Apps Script (Drive).
+App web para a visita diária do NSP e da CCIH no Pronto Socorro e na Clínica Médica. É um sistema **independente**, com projeto Firebase, logins e banco de dados próprios. Roda no GitHub Pages e grava no Drive pelo Apps Script.
 
 O fluxo de uso é: **painel de leitos → abre o leito → admite o paciente (pode vir preenchido pelo censo) → check-list NSP + CCIH**.
 
@@ -9,35 +9,52 @@ O fluxo de uso é: **painel de leitos → abre o leito → admite o paciente (po
 | Arquivo | O que é |
 |---|---|
 | `index.html` | Telas do app |
-| `styles.css` | Visual (mesma base do sistema da UTI) |
-| `config.js` | **Tudo o que se ajusta**: Firebase, URL do Apps Script, admins, leitos, itens dos check-lists, parâmetros da amostra |
+| `styles.css` | Visual |
+| `config.js` | **Tudo o que se ajusta**: chaves do Firebase, URL do Apps Script, admins, leitos, itens dos check-lists, parâmetros da amostra |
 | `app.js` | Lógica |
 | `logo.png` | Logo HOSPESC |
-| `firestore.rules` | Trecho de regras a acrescentar no Firestore |
+| `firestore.rules` | Regras de segurança do banco |
 | `apps-script/Code.gs` | Backend no Google (planilhas no Drive) |
 
-## Publicar (passo a passo)
+## 1. Criar o projeto Firebase (uma vez)
 
-1. **GitHub**: crie um repositório (ex.: `nvhospesc/buscaativa`) e envie todos os arquivos, menos a pasta `apps-script`. Depois, em *Settings → Pages*, escolha *Deploy from branch → main / root*. O app fica em `https://nvhospesc.github.io/buscaativa/`.
-2. **Firebase** (projeto `evolucaouti`, o mesmo da UTI):
-   - *Firestore → Regras*: cole o conteúdo de `firestore.rules` **dentro** do bloco `match /databases/{database}/documents` que já existe e publique. Não apague as regras da UTI.
-   - *Authentication → Configurações → Domínios autorizados*: confirme que `nvhospesc.github.io` está na lista.
-3. **Primeiro acesso**: entre com um e-mail da lista `ADMIN_EMAILS` (config.js). O perfil de admin é criado sozinho. Depois cadastre a equipe em **👥 Usuários**. Quem já tem login da UTI entra com a mesma senha.
-4. **Apps Script** (quando definir as planilhas de destino): siga o cabeçalho de `apps-script/Code.gs`, depois cole a URL `/exec` em `APPS_SCRIPT_URL` no `config.js`. A partir daí:
-   - cada busca ativa salva vira uma linha na aba `BUSCA_ATIVA` (atualizada se a visita for editada);
-   - admissões, saídas, transferências e bloqueios vão para a aba `MOVIMENTOS`;
-   - aparece o botão **☁ Importar direto do Drive** no censo.
+1. Entre em **console.firebase.google.com** com a conta Gmail do NSP e clique em **Criar projeto** (ex.: `buscaativa-hospesc`). O Google Analytics não é necessário.
+2. Em **Authentication → Começar**, ative **E-mail/senha**.
+3. Ainda em **Authentication → Usuários → Adicionar usuário**, crie o primeiro administrador com o e-mail que está em `ADMIN_EMAILS` no `config.js` (hoje, `tercio@hospesc.com.br`) e uma senha.
+4. Em **Firestore Database → Criar banco de dados**, escolha o modo de produção e a região `southamerica-east1` (São Paulo).
+5. Em **Firestore → Regras**, apague o que estiver lá, cole o arquivo `firestore.rules` inteiro e clique em **Publicar**.
+6. Em **Configurações do projeto (⚙️) → Seus apps → `</>` (Web)**, registre o app e copie os valores de `firebaseConfig` para o bloco `FIREBASE` do `config.js`.
 
-## Dados no Firestore
+Se mudar a lista de administradores, mude nos dois lugares: `ADMIN_EMAILS` no `config.js` e `adminsFixos()` no `firestore.rules`.
 
-| Coleção | Conteúdo |
+## 2. Publicar no GitHub Pages
+
+1. Crie um repositório (ex.: `nvhospesc/buscaativa`) e envie todos os arquivos, menos a pasta `apps-script`.
+2. Em **Settings → Pages**, escolha **Deploy from branch → main / root**. O app fica em `https://nvhospesc.github.io/buscaativa/`.
+3. No Firebase, em **Authentication → Configurações → Domínios autorizados**, adicione `nvhospesc.github.io`.
+
+## 3. Primeiro acesso e equipe
+
+Entre com o administrador criado no passo 1.3; o perfil dele é criado sozinho. Depois cadastre a equipe em **👥 Usuários**: a pessoa recebe uma senha provisória (padrão `hospesc123`) e cria a própria senha no primeiro acesso.
+
+## 4. Apps Script (quando definir as planilhas de destino)
+
+Siga o cabeçalho de `apps-script/Code.gs`: cole a `apiKey` do Firebase e os IDs das planilhas, depois publique como **App da Web**. Cole a URL `/exec` em `APPS_SCRIPT_URL` no `config.js`. A partir daí:
+
+- cada busca ativa salva vira uma linha na aba `BUSCA_ATIVA` (atualizada se a visita for editada);
+- admissões, saídas, transferências e bloqueios vão para a aba `MOVIMENTOS`;
+- aparece o botão **☁ Importar direto do Drive** no censo.
+
+## Dados (coleção única `busca_ativa_nsp`)
+
+| Prefixo do documento | Conteúdo |
 |---|---|
-| `usuarios_nsp` | Perfis (nome, função, admin, ativo) |
-| `nsp_leitos` | Um documento por leito: paciente atual, admissão, procedência, HD, alergia, isolamento, dispositivos |
-| `nsp_visitas` | Uma busca ativa por paciente por dia (`data_internação`) |
-| `nsp_amostras` | Amostra sorteada de cada dia |
-| `nsp_movimentos` | Histórico de admissões, saídas, transferências e bloqueios |
-| `nsp_config/censo` | Último censo importado (só nome, admissão, procedência, HD e O₂) |
+| `usuario__<e-mail>` | Perfil (nome, função, admin, ativo) |
+| `leito__<leito>` | Paciente atual: nome, admissão, procedência, HD, alergia, isolamento, dispositivos |
+| `visita__<data>_<internação>` | Uma busca ativa por paciente por dia |
+| `amostra__<data>` | Amostra sorteada do dia |
+| `mov__<data>_<id>` | Histórico de admissões, saídas, transferências e bloqueios (não pode ser apagado) |
+| `config__censo` | Último censo importado (só nome, admissão, procedência, HD, O₂ e isolamento) |
 
 Idade, sexo, data de nascimento, CNS, CPF e evolução clínica **não são guardados**.
 

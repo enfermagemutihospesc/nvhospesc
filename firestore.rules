@@ -1,36 +1,52 @@
+rules_version = '2';
+
 // ════════════════════════════════════════════════════════════════════════════
-// REGRAS DO FIRESTORE – trecho da BUSCA ATIVA NSP / CCIH
-// Projeto: evolucaouti (o mesmo do sistema da UTI)
+// REGRAS DO FIRESTORE – BUSCA ATIVA NSP / CCIH (projeto Firebase próprio)
+// Cole este arquivo inteiro em: Firestore Database → Regras → Publicar.
 //
-// NÃO substitua as regras atuais da UTI. No console do Firebase
-// (Firestore Database → Regras), cole as funções e os blocos "match" abaixo
-// DENTRO do bloco "match /databases/{database}/documents { ... }" que já existe,
-// e clique em Publicar.
+// Coleção única: busca_ativa_nsp (igual a COLECAO do config.js).
+// O ID de cada documento leva o tipo como prefixo:
+//   usuario__<email>  leito__<id>  visita__<data>_<internação>
+//   amostra__<data>   mov__<id>    config__censo
 // ════════════════════════════════════════════════════════════════════════════
+service cloud.firestore {
+  match /databases/{database}/documents {
 
-    // ── Busca ativa NSP/CCIH ──────────────────────────────────────────────────
     // Mantenha esta lista igual a ADMIN_EMAILS do config.js
-    function nspAdminsFixos() { return ['tercio@hospesc.com.br']; }
-    function nspEmail() { return request.auth.token.email.lower(); }
-    function nspPerfil() { return /databases/$(database)/documents/usuarios_nsp/$(nspEmail()); }
-    function nspAdmin() {
-      return request.auth != null && (nspEmail() in nspAdminsFixos()
-        || (exists(nspPerfil()) && get(nspPerfil()).data.role == 'admin' && get(nspPerfil()).data.ativo == true));
+    function adminsFixos() { return ['tercio@hospesc.com.br']; }
+    function emailAtual() { return request.auth.token.email.lower(); }
+    function perfil() { return /databases/$(database)/documents/busca_ativa_nsp/$('usuario__' + emailAtual()); }
+    function ehAdmin() {
+      return request.auth != null && (emailAtual() in adminsFixos()
+        || (exists(perfil()) && get(perfil()).data.role == 'admin' && get(perfil()).data.ativo == true));
     }
-    function nspAtivo() {
-      return request.auth != null && (nspEmail() in nspAdminsFixos()
-        || (exists(nspPerfil()) && get(nspPerfil()).data.ativo == true));
+    function ehAtivo() {
+      return request.auth != null && (emailAtual() in adminsFixos()
+        || (exists(perfil()) && get(perfil()).data.ativo == true));
     }
 
-    match /usuarios_nsp/{email} {
-      allow read: if request.auth != null;
-      allow create, delete: if nspAdmin();
-      allow update: if nspAdmin()
-        || (request.auth != null && nspEmail() == email
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['senhaTrocada']));
+    match /busca_ativa_nsp/{doc} {
+      // Qualquer usuário ativo lê; quem acabou de entrar pode ler o próprio perfil
+      allow read: if ehAtivo() || (request.auth != null && doc == 'usuario__' + emailAtual());
+
+      // Perfis: só admin cria ou remove
+      allow create: if (doc.matches('usuario__.*') && ehAdmin())
+                    || (!doc.matches('usuario__.*') && ehAtivo());
+
+      // Movimentos (mov__) são histórico: não podem ser alterados nem apagados
+      allow delete: if (doc.matches('usuario__.*') && ehAdmin())
+                    || (!doc.matches('usuario__.*') && !doc.matches('mov__.*') && ehAtivo());
+
+      // A própria pessoa só pode marcar que trocou a senha do 1º acesso
+      allow update: if (doc.matches('usuario__.*') && ehAdmin())
+                    || (request.auth != null && doc == 'usuario__' + emailAtual()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['senhaTrocada']))
+                    || (!doc.matches('usuario__.*') && !doc.matches('mov__.*') && ehAtivo());
     }
-    match /nsp_leitos/{id}     { allow read, write: if nspAtivo(); }
-    match /nsp_visitas/{id}    { allow read, write: if nspAtivo(); }
-    match /nsp_amostras/{id}   { allow read, write: if nspAtivo(); }
-    match /nsp_config/{id}     { allow read, write: if nspAtivo(); }
-    match /nsp_movimentos/{id} { allow read, create: if nspAtivo(); }
+
+    // Qualquer outra coisa fica fechada
+    match /{caminho=**} {
+      allow read, write: if false;
+    }
+  }
+}

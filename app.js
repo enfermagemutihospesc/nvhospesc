@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // BUSCA ATIVA NSP / CCIH – Hospital dos Pescadores (Natal/RN)
-// Mesma arquitetura do sistema da UTI: GitHub Pages + Firebase (Auth/Firestore)
+// Sistema independente: GitHub Pages + Firebase próprio (Auth/Firestore)
 // + Apps Script (Drive). Sem dados clínicos além do modelo de busca ativa.
 // ════════════════════════════════════════════════════════════════════════════
 'use strict';
@@ -92,9 +92,28 @@ function msgErro(e) {
 }
 
 // ── ARMAZENAMENTO (Firestore, com fallback "modo local" em localStorage) ─────
-// Gravações no Firestore com persistência offline: se a rede cair, a escrita
-// fica na fila do aparelho e sincroniza depois. Por isso a espera é limitada
-// (10 s) e o retorno indica 'ok' ou 'pendente'.
+// Tudo fica numa coleção única (CFG.COLECAO, ex.: "busca_ativa_nsp").
+// O tipo de registro vai como prefixo do ID do documento:
+//   usuario__<email>   leito__<bedId>   visita__<data>_<internação>
+//   amostra__<data>    mov__<id>        config__censo
+// As listagens usam faixa de ID (FieldPath.documentId), sem precisar de índice.
+// Gravações com persistência offline: se a rede cair, a escrita fica na fila
+// do aparelho e sincroniza depois; a espera é limitada (10 s) e o retorno
+// indica 'ok' ou 'pendente'.
+const TIPOS = {
+  usuarios_nsp: 'usuario', nsp_leitos: 'leito', nsp_visitas: 'visita',
+  nsp_amostras: 'amostra', nsp_movimentos: 'mov', nsp_config: 'config'
+};
+function _docId(col, id) { return TIPOS[col] + '__' + id; }
+function _ref(col, id) { return db.collection(CFG.COLECAO).doc(_docId(col, id)); }
+function _faixa(col, de, ate) {
+  const FP = firebase.firestore.FieldPath.documentId();
+  return db.collection(CFG.COLECAO).where(FP, '>=', TIPOS[col] + '__' + de).where(FP, '<=', TIPOS[col] + '__' + ate + '\uf8ff');
+}
+function _semPrefixo(col, docId) { return docId.slice(TIPOS[col].length + 2); }
+function _comTipo(col, data) { return { ...JSON.parse(JSON.stringify(data)), _tipo: TIPOS[col] }; }
+function _semTipo(d) { if (d && typeof d === 'object') delete d._tipo; return d; }
+
 const Store = {
   _k: col => 'nsp_local__' + col,
   _load(col) { try { return JSON.parse(localStorage.getItem(this._k(col)) || '{}'); } catch (e) { return {}; } },
@@ -102,19 +121,20 @@ const Store = {
 
   async get(col, id) {
     if (modoLocal) return this._load(col)[id] || null;
-    const s = await db.collection(col).doc(id).get();
-    return s.exists ? s.data() : null;
+    const s = await _ref(col, id).get();
+    return s.exists ? _semTipo(s.data()) : null;
   },
   async list(col) {
     if (modoLocal) return this._load(col);
-    const snap = await db.collection(col).get();
-    const out = {}; snap.forEach(d => { out[d.id] = d.data(); });
+    const snap = await _faixa(col, '', '').get();
+    const out = {}; snap.forEach(d => { out[_semPrefixo(col, d.id)] = _semTipo(d.data()); });
     return out;
   },
+  // Faixa de datas: os IDs de visitas e amostras começam pela data (AAAA-MM-DD)
   async range(col, campo, de, ate) {
     if (modoLocal) return Object.values(this._load(col)).filter(x => x && x[campo] >= de && x[campo] <= ate);
-    const snap = await db.collection(col).where(campo, '>=', de).where(campo, '<=', ate).get();
-    return snap.docs.map(d => d.data());
+    const snap = await _faixa(col, de, ate).get();
+    return snap.docs.map(d => _semTipo(d.data())).filter(x => x && x[campo] >= de && x[campo] <= ate);
   },
   async set(col, id, data) {
     const limpo = JSON.parse(JSON.stringify(data));
@@ -123,7 +143,7 @@ const Store = {
       if (!this._save(col, all)) throw new Error('Armazenamento local cheio ou indisponível.');
       return 'ok';
     }
-    return _escrever(db.collection(col).doc(id).set(limpo));
+    return _escrever(_ref(col, id).set(_comTipo(col, limpo)));
   },
   async merge(col, id, data) {
     const limpo = JSON.parse(JSON.stringify(data));
@@ -132,12 +152,12 @@ const Store = {
       if (!this._save(col, all)) throw new Error('Armazenamento local cheio ou indisponível.');
       return 'ok';
     }
-    return _escrever(db.collection(col).doc(id).set(limpo, { merge: true }));
+    return _escrever(_ref(col, id).set(limpo, { merge: true }));
   },
-  async add(col, data) { const id = uid(); await this.set(col, id, { ...data, _id: id }); return id; },
+  async add(col, data) { const id = (data.data || hojeISO()) + '_' + uid(); await this.set(col, id, { ...data, _id: id }); return id; },
   async del(col, id) {
     if (modoLocal) { const all = this._load(col); delete all[id]; this._save(col, all); return 'ok'; }
-    return _escrever(db.collection(col).doc(id).delete());
+    return _escrever(_ref(col, id).delete());
   }
 };
 async function _escrever(promessa) {
@@ -173,6 +193,11 @@ async function apsFetch(payload, fireAndForget = false) {
 }
 
 // ── FIREBASE / LOGIN ────────────────────────────────────────────────────────
+function firebaseConfigurado() {
+  const f = CFG.FIREBASE || {};
+  return !!(f.apiKey && f.projectId && !/COLE_AQUI|SEU-PROJETO/.test(f.apiKey + f.projectId));
+}
+
 function initFirebase() {
   try {
     if (typeof firebase === 'undefined') return false;
@@ -1619,7 +1644,7 @@ async function renderUsuarios() {
       <div class="usr-acoes">
         <button class="btn btn-sm btn-sec" data-u="${esc(u.email)}" data-acao="ativo" ${fixo || eu ? 'disabled' : ''}>${ativo ? 'Desativar' : 'Reativar'}</button>
         <button class="btn btn-sm btn-sec" data-u="${esc(u.email)}" data-acao="admin" ${fixo || eu ? 'disabled' : ''}>${u.role === 'admin' ? 'Tirar admin' : 'Tornar admin'}</button>
-        <button class="btn btn-sm btn-rem-u" data-u="${esc(u.email)}" data-acao="remover" ${fixo || eu ? 'disabled' : ''} title="Remove o acesso a este app (o login continua valendo nos outros sistemas)">🗑</button>
+        <button class="btn btn-sm btn-rem-u" data-u="${esc(u.email)}" data-acao="remover" ${fixo || eu ? 'disabled' : ''} title="Remove o acesso a este app">🗑</button>
       </div></div>`;
   }).join('');
 }
@@ -1633,7 +1658,7 @@ async function aoClicarUsuario(ev) {
     if (acao === 'ativo') await Store.merge('usuarios_nsp', email, { ativo: u.ativo === false });
     else if (acao === 'admin') await Store.merge('usuarios_nsp', email, { role: u.role === 'admin' ? 'membro' : 'admin' });
     else if (acao === 'remover') {
-      if (!confirm(`Remover o acesso de ${email} à busca ativa?\n\nO login continua existindo para os outros sistemas (ex.: UTI).`)) return;
+      if (!confirm(`Remover o acesso de ${email} à busca ativa?\n\nA conta de login continua no Firebase (dá para reativar cadastrando de novo; para apagar de vez, use o console do Firebase → Authentication).`)) return;
       await Store.del('usuarios_nsp', email);
     }
     toast('✓ Usuário atualizado');
@@ -1658,10 +1683,10 @@ async function adicionarUsuario() {
       await sec.auth().createUserWithEmailAndPassword(email, senha);
       await sec.auth().signOut();
     } catch (e) {
-      if (e.code === 'auth/email-already-in-use') jaExistia = true; else throw e;
+      if (e.code === 'auth/email-already-in-use') jaExistia = true; else throw e; // reativação de quem já foi cadastrado
     }
     await Store.set('usuarios_nsp', email, { nome, funcao, role, ativo: true, senhaTrocada: jaExistia, criadoEm: agoraISO(), criadoPor: usuarioEmail });
-    toast(jaExistia ? '✓ Acesso liberado (o login já existia: a pessoa usa a senha que já tem)' : '✓ Usuário criado. No 1º acesso a pessoa define a senha.');
+    toast(jaExistia ? '✓ Acesso reativado (o login já existia: a pessoa usa a senha que já tinha)' : '✓ Usuário criado. No 1º acesso a pessoa define a senha.');
     ['u-nome', 'u-email'].forEach(id => sf(id, ''));
     sf('u-senha', 'hospesc123');
     renderUsuarios();
@@ -1719,6 +1744,11 @@ window.addEventListener('load', () => {
   ligarEventos();
 
   if (new URLSearchParams(location.search).get('local') === '1') { usarModoLocal(); return; }
+  if (!firebaseConfigurado()) {
+    document.getElementById('cfg-titulo').textContent = '⚙️ Firebase ainda não configurado';
+    document.getElementById('cfg-texto').innerHTML = 'Crie o projeto Firebase deste sistema e cole as chaves em <code>config.js</code> (passo a passo no README).';
+    mostrarTela('t-config'); return;
+  }
   if (!initFirebase()) { mostrarTela('t-config'); return; }
   mostrarTela('t-login');
   auth.onAuthStateChanged(user => { aoMudarAuth(user).catch(e => { console.error(e); hideLoading(); toast('Erro no login: ' + msgErro(e), true); }); });
