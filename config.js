@@ -24,12 +24,12 @@
     // Crie em console.firebase.google.com → Configurações do projeto →
     // Seus apps → App da Web, e cole aqui os valores (passo a passo no README).
     FIREBASE: {
-      apiKey: "COLE_AQUI",
-      authDomain: "SEU-PROJETO.firebaseapp.com",
-      projectId: "SEU-PROJETO",
-      storageBucket: "SEU-PROJETO.firebasestorage.app",
-      messagingSenderId: "COLE_AQUI",
-      appId: "COLE_AQUI"
+      apiKey: "AIzaSyC_Nlc9Llf62HMJmkor_UB38Uu8342nloU",
+      authDomain: "buscaativa-hospesc.firebaseapp.com",
+      projectId: "buscaativa-hospesc",
+      storageBucket: "buscaativa-hospesc.firebasestorage.app",
+      messagingSenderId: "276266438773",
+      appId: "1:276266438773:web:80cac2b9308c725345283c"
     },
 
     // Coleção do sistema no Firestore. Se mudar o nome aqui, mude também no firestore.rules.
