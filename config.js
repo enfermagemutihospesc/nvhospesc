@@ -2,7 +2,7 @@
 // BUSCA ATIVA NSP / CCIH – Hospital dos Pescadores
 // Arquivo de CONFIGURAÇÃO. Tudo o que pode mudar sem mexer na lógica está aqui:
 // projeto Firebase, URL do Apps Script, administradores, leitos, itens dos
-// check-lists e parâmetros da amostragem.
+// check-lists e ciclo semanal de visitas.
 // ════════════════════════════════════════════════════════════════════════════
 
 (function () {
@@ -50,41 +50,44 @@
     // Formulário de notificação do NSP (Google Forms)
     NSP_FORM_URL: 'https://docs.google.com/forms/d/e/1FAIpQLSfpuEkVu7xLfbX8aUYa1rG-Oo77w3ae9DDBFvSRxvAomWAYgQ/viewform',
 
-    // ── AMOSTRAGEM ───────────────────────────────────────────────────────────
-    // n = N·Z²·p·q / [e²·(N−1) + Z²·p·q], com N = leitos ativos (não bloqueados),
-    // como se o hospital estivesse sempre lotado. A fração n/N é aplicada aos
-    // leitos ocupados de cada setor (amostra estratificada, sorteio aleatório).
-    AMOSTRA: { z: 1.96, confianca: '95%', margemErro: 0.10, p: 0.5 },
+    // ── CICLO DE VISITAS ─────────────────────────────────────────────────────
+    // Todos os pacientes internados recebem UMA busca ativa por semana
+    // (segunda a domingo), divididos entre os dias de visita da equipe.
+    // Depois de visitado na semana, o leito sai da lista de pendentes.
+    VISITAS_POR_SEMANA: 3,
 
     // ── SETORES E LEITOS (espelho do censo do NIR; PS e Clínica Médica) ────────────────
-    // "censo" = rótulo da coluna B do censo usado na importação.
+    // "censo"      = rótulo da coluna B do censo usado na importação.
+    // "notif"      = como o leito é escrito na planilha de notificações do NSP
+    //                (o app completa com o número: "PS S.V L" + "02" → "PS S.V L02").
+    // "notifSetor" = opção do campo "Setor ou categoria envolvidos na falha".
     SETORES: [
-      { id: 'ps', nome: 'Pronto Socorro', sigla: 'PS', grupos: [
-        { nome: 'Sala Vermelha',               censo: 'SALA VERMELHA', leitos: L('ps_sv', 1, 3) },
-        { nome: 'Sala Amarela',                censo: 'SALA AMARELA',  leitos: L('ps_sa', 4, 8) },
-        { nome: 'Isolamento',                  censo: 'ISOLAMENTO',    leitos: L('ps_iso', 9, 10) },
-        { nome: 'Sutura (Iso)',                censo: 'SUTURA (ISO)',  leitos: L('ps_sutiso', 1, 1) },
-        { nome: 'Sala de Estabilização (ECG)', censo: 'ESTABILIZACAO', leitos: L('ps_ecg', 1, 2) },
-        { nome: 'Sutura',                      censo: 'SUTURA',        leitos: L('ps_sut', 1, 1) },
-        { nome: 'Poltronas',                   censo: 'POLTRONA',      leitos: L('ps_pol', 1, 4, n => 'POLTRONA ' + pad(n)) },
-        { nome: 'Cadeiras',                    censo: 'CADEIRA',       leitos: L('ps_cad', 1, 5, n => 'CADEIRA ' + pad(n)) }
+      { id: 'ps', nome: 'Pronto Socorro', sigla: 'PS', notifSetor: 'PS', grupos: [
+        { nome: 'Sala Vermelha',               censo: 'SALA VERMELHA', notif: 'PS S.V L',          leitos: L('ps_sv', 1, 3) },
+        { nome: 'Sala Amarela',                censo: 'SALA AMARELA',  notif: 'PS S.A L',          leitos: L('ps_sa', 4, 8) },
+        { nome: 'Isolamento',                  censo: 'ISOLAMENTO',    notif: 'PS ISOLAMENTO L',   leitos: L('ps_iso', 9, 10) },
+        { nome: 'Sutura (Iso)',                censo: 'SUTURA (ISO)',  notif: 'PS SUTURA ISO ',    leitos: L('ps_sutiso', 1, 1) },
+        { nome: 'Sala de Estabilização (ECG)', censo: 'ESTABILIZACAO', notif: 'PS ESTABILIZAÇÃO ', leitos: L('ps_ecg', 1, 2) },
+        { nome: 'Sutura',                      censo: 'SUTURA',        notif: 'PS SUTURA ',        leitos: L('ps_sut', 1, 1) },
+        { nome: 'Poltronas',                   censo: 'POLTRONA',      notif: 'PS POLTRONA ',      leitos: L('ps_pol', 1, 4, n => 'POLTRONA ' + pad(n)) },
+        { nome: 'Cadeiras',                    censo: 'CADEIRA',       notif: 'PS CADEIRA ',       leitos: L('ps_cad', 1, 5, n => 'CADEIRA ' + pad(n)) }
       ]},
-      { id: 'cmt', nome: 'Clínica Médica Térreo', sigla: 'CM Térreo', grupos: [
-        { nome: 'Enfermaria 01', censo: 'ENFERMARIA', leitos: L('cm', 1, 2) },
-        { nome: 'Enfermaria 02', censo: 'ENFERMARIA', leitos: L('cm', 3, 4) },
-        { nome: 'Enfermaria 03', censo: 'ENFERMARIA', leitos: L('cm', 5, 6) },
-        { nome: 'Enfermaria 04', censo: 'ENFERMARIA', leitos: L('cm', 7, 8) },
-        { nome: 'Enfermaria 05', censo: 'ENFERMARIA', leitos: L('cm', 9, 10) },
-        { nome: 'Enfermaria 06', censo: 'ENFERMARIA', leitos: L('cm', 11, 12) }
+      { id: 'cmt', nome: 'Clínica Médica Térreo', sigla: 'CM Térreo', notifSetor: 'Clínica médica térreo', grupos: [
+        { nome: 'Enfermaria 01', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF01 L', leitos: L('cm', 1, 2) },
+        { nome: 'Enfermaria 02', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF02 L', leitos: L('cm', 3, 4) },
+        { nome: 'Enfermaria 03', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF03 L', leitos: L('cm', 5, 6) },
+        { nome: 'Enfermaria 04', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF04 L', leitos: L('cm', 7, 8) },
+        { nome: 'Enfermaria 05', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF05 L', leitos: L('cm', 9, 10) },
+        { nome: 'Enfermaria 06', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF06 L', leitos: L('cm', 11, 12) }
       ]},
-      { id: 'psi', nome: 'Saúde Mental', sigla: 'Saúde Mental', grupos: [
-        { nome: 'Enfermaria 07 – Psico Feminina',  censo: 'ENFERMARIA', leitos: L('cm', 13, 15) },
-        { nome: 'Enfermaria 08 – Psico Masculina', censo: 'ENFERMARIA', leitos: L('cm', 16, 18) }
+      { id: 'psi', nome: 'Saúde Mental', sigla: 'Saúde Mental', notifSetor: 'Clínica médica térreo', grupos: [
+        { nome: 'Enfermaria 07 – Psico Feminina',  censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF07 L', leitos: L('cm', 13, 15) },
+        { nome: 'Enfermaria 08 – Psico Masculina', censo: 'ENFERMARIA', notif: 'CM TÉRREO ENF08 L', leitos: L('cm', 16, 18) }
       ]},
-      { id: 'cm1', nome: 'Clínica Médica 1º Andar', sigla: 'CM 1º Andar', grupos: [
-        { nome: 'Enfermaria 09', censo: 'ENFERMARIA', leitos: L('cm', 19, 24) },
-        { nome: 'Enfermaria 10', censo: 'ENFERMARIA', leitos: L('cm', 25, 30) },
-        { nome: 'Enfermaria 11', censo: 'ENFERMARIA', leitos: L('cm', 31, 34) }
+      { id: 'cm1', nome: 'Clínica Médica 1º Andar', sigla: 'CM 1º Andar', notifSetor: 'Clínica médica 1° andar', grupos: [
+        { nome: 'Enfermaria 09', censo: 'ENFERMARIA', notif: 'CM 1º ANDAR ENF09 L', leitos: L('cm', 19, 24) },
+        { nome: 'Enfermaria 10', censo: 'ENFERMARIA', notif: 'CM 1º ANDAR ENF10 L', leitos: L('cm', 25, 30) },
+        { nome: 'Enfermaria 11', censo: 'ENFERMARIA', notif: 'CM 1º ANDAR ENF11 L', leitos: L('cm', 31, 34) }
       ]}
     ],
 
@@ -97,60 +100,26 @@
     // tipo 'cnc'    → Conforme / Não conforme
     // tipo 'cnc_na' → Conforme / Não conforme / Não se aplica
     // se: condição de exibição (alergia = Sim, isolamento ≠ Não)
+    // notif: categoria sugerida quando o item for marcado "Não conforme" e notificado
     NSP_ITENS: [
-      { id: 'placa',            grupo: 'Identificação do paciente', texto: 'Placa de identificação do leito', tipo: 'cnc' },
-      { id: 'pulseira',         grupo: 'Identificação do paciente', texto: 'Pulseira de identificação', tipo: 'cnc' },
-      { id: 'pulseira_alergia', grupo: 'Identificação do paciente', texto: 'Pulseira vermelha de alergia', tipo: 'cnc', se: 'alergia' },
-      { id: 'isol_sinal',       grupo: 'Precauções / isolamento',   texto: 'Sinalização de precaução/isolamento no leito', tipo: 'cnc', se: 'isolamento' },
-      { id: 'queda_sinal',      grupo: 'Prevenção de quedas',       texto: 'Risco de queda avaliado e sinalizado conforme protocolo', tipo: 'cnc_na' },
-      { id: 'grades',           grupo: 'Prevenção de quedas',       texto: 'Grades elevadas / leito na posição mais baixa', tipo: 'cnc_na' },
-      { id: 'lpp',              grupo: 'Prevenção de LPP',          texto: 'Medidas de prevenção de LPP (mudança de decúbito, superfície de suporte)', tipo: 'cnc_na' },
-      { id: 'infusao_rotulo',   grupo: 'Medicação segura',          texto: 'Soluções/medicamentos em infusão com rótulo de identificação', tipo: 'cnc_na' },
-      { id: 'alcool_gel',       grupo: 'Higiene das mãos',          texto: 'Preparação alcoólica disponível no ponto de assistência', tipo: 'cnc' }
+      { id: 'placa',            grupo: 'Identificação do paciente', texto: 'Placa de identificação do leito', tipo: 'cnc', notif: 'Identificação de paciente' },
+      { id: 'pulseira',         grupo: 'Identificação do paciente', texto: 'Pulseira de identificação', tipo: 'cnc', notif: 'Identificação de paciente' },
+      { id: 'pulseira_alergia', grupo: 'Identificação do paciente', texto: 'Pulseira vermelha de alergia', tipo: 'cnc', notif: 'Identificação de paciente', se: 'alergia' },
+      { id: 'isol_sinal',       grupo: 'Precauções / isolamento',   texto: 'Sinalização de precaução/isolamento no leito', tipo: 'cnc', notif: 'Falha de processo', se: 'isolamento' },
+      { id: 'queda_sinal',      grupo: 'Prevenção de quedas',       texto: 'Risco de queda avaliado e sinalizado conforme protocolo', tipo: 'cnc_na', notif: 'Falha de processo' },
+      { id: 'grades',           grupo: 'Prevenção de quedas',       texto: 'Grades elevadas / leito na posição mais baixa', tipo: 'cnc_na', notif: 'Falha de processo' },
+      { id: 'lpp',              grupo: 'Prevenção de LPP',          texto: 'Medidas de prevenção de LPP (mudança de decúbito, superfície de suporte)', tipo: 'cnc_na', notif: 'Falha de processo' },
+      { id: 'infusao_rotulo',   grupo: 'Medicação segura',          texto: 'Soluções/medicamentos em infusão com rótulo de identificação', tipo: 'cnc_na', notif: 'Falha na cadeia medicamentosa' },
+      { id: 'alcool_gel',       grupo: 'Higiene das mãos',          texto: 'Preparação alcoólica disponível no ponto de assistência', tipo: 'cnc', notif: 'Falta de material ou medicamento' }
     ],
 
-    // ── CHECK-LIST CCIH (bundles) ───────────
-    // disp: dispositivo que ativa o bundle (cvc | avp | svd | via_aerea)
-    // criterio 'sim' → SIM é aderente | 'nao' → NÃO é aderente | 'info' → só registro
-    // na: true → aceita "N/A" (não entra no cálculo)
-    BUNDLES: [
-      { id: 'cvc', disp: 'cvc', icone: '🩸', titulo: 'Prevenção de IPCS – Cateter Central (CVC / CDL / PICC)', itens: [
-        { id: 'cvc_curativo_tipo',  texto: 'Qual curativo utilizado?', opcoes: ['GAZE', 'FILME'], criterio: 'info' },
-        { id: 'cvc_curativo_data',  texto: 'Curativo com data da realização?', criterio: 'sim' },
-        { id: 'cvc_curativo_troca', texto: 'Curativo precisa ser trocado?', criterio: 'info' },
-        { id: 'cvc_sem_sangue',     texto: 'Dispositivos (dânula, polifix, conector) sem resíduo de sangue?', criterio: 'sim' },
-        { id: 'cvc_equipo_data',    texto: 'Equipos e dispositivos com data da instalação?', criterio: 'sim' },
-        { id: 'cvc_equipo_troca',   texto: 'Equipos e dispositivos precisam ser trocados?', criterio: 'info' },
-        { id: 'cvc_alcool',         texto: 'Realizada orientação sobre desinfecção das conexões com álcool 70% antes de equipos ou seringas?', criterio: 'sim' }
-      ]},
-      { id: 'avp', disp: 'avp', icone: '💉', titulo: 'Prevenção de IPCS – Acesso Venoso Periférico (AVP)', itens: [
-        { id: 'avp_curativo_limpo', texto: 'Curativo limpo e seco?', criterio: 'sim' },
-        { id: 'avp_dor_edema',      texto: 'Paciente refere dor, ou apresenta edema, hiperemia?', criterio: 'nao' },
-        { id: 'avp_data_puncao',    texto: 'Acesso com data em que foi realizada a punção?', criterio: 'sim' },
-        { id: 'avp_sem_sangue',     texto: 'Dispositivos (dânula, polifix, conector) sem resíduo de sangue?', criterio: 'sim' },
-        { id: 'avp_equipo_data',    texto: 'Equipos com data da instalação?', criterio: 'sim' },
-        { id: 'avp_equipo_troca',   texto: 'Equipos precisam ser trocados?', criterio: 'info' }
-      ]},
-      { id: 'svd', disp: 'svd', icone: '🚽', titulo: 'Prevenção de ITU-AC – Sonda Vesical de Demora (SVD)', itens: [
-        { id: 'svd_data',         texto: 'Possui identificação da data da instalação?', criterio: 'sim' },
-        { id: 'svd_fixacao',      texto: 'Sonda fixada corretamente no paciente?', criterio: 'sim' },
-        { id: 'svd_higiene',      texto: 'Realizada higiene do meato urinário?', criterio: 'sim' },
-        { id: 'svd_dobras',       texto: 'Apresenta dobras no sistema?', criterio: 'nao' },
-        { id: 'svd_bolsa_nivel',  texto: 'Bolsa coletora abaixo do nível da bexiga e sem contato com o chão?', criterio: 'sim' },
-        { id: 'svd_bolsa_volume', texto: 'Bolsa coletora com volume até 2/3 da capacidade?', criterio: 'sim' }
-      ]},
-      { id: 'pav', disp: 'via_aerea', icone: '💨', titulo: 'Prevenção de PAV – Via Aérea Artificial (TOT / TQT)', itens: [
-        { id: 'pav_higiene_oral', texto: 'Realizada HIGIENE ORAL?', criterio: 'sim' },
-        { id: 'pav_cabeceira',    texto: 'Cabeceira elevada (30–45°)?', criterio: 'sim' },
-        { id: 'pav_fixacao',      texto: 'TOT ou TQT com fixação adequada?', criterio: 'sim' },
-        { id: 'pav_sne',          texto: 'Sonda nasoenteral com fixação adequada?', criterio: 'sim', na: true },
-        { id: 'pav_aspiracao',    texto: 'Sistema de aspiração fechado dentro do prazo de validade?', criterio: 'sim', na: true },
-        { id: 'pav_latex',        texto: 'Realizada troca do látex e vacuômetro conforme rotina?', criterio: 'sim', na: true }
-      ]}
-    ],
-
-    // Eventos da coluna NOTIFICAÇÕES
-    EVENTOS_NOTIFICACAO: ['Lesão por pressão', 'Queda', 'Flebite', 'Perda/saída acidental de dispositivo',
-      'Erro de medicação', 'Broncoaspiração', 'Evasão', 'Falha de identificação', 'Outro']
+    // ── NOTIFICAÇÕES (mesmas opções do formulário do NSP) ────────────────────
+    // Cada notificação registrada na busca ativa vira UMA LINHA na planilha de
+    // respostas do formulário "Notificação - Núcleo de Segurança do Paciente"
+    // (enviada pelo Apps Script; ID da planilha no Code.gs).
+    NOTIF_CATEGORIAS: ['Identificação de paciente', 'Falha de processo', 'Falha na cadeia medicamentosa',
+      'Falta de material ou medicamento', 'Lesão por pressão', 'Queda', 'Flebite', 'Falha de comunicação',
+      'Falha de artigo médico hospitalar', 'Falha na administração de hemocomponente',
+      'Infecção relacionada à assistência ao paciente', 'Outros']
   };
 })();

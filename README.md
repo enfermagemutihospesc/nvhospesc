@@ -10,9 +10,10 @@ O fluxo de uso é: **painel de leitos → abre o leito → admite o paciente (po
 |---|---|
 | `index.html` | Telas do app |
 | `styles.css` | Visual |
-| `config.js` | **Tudo o que se ajusta**: chaves do Firebase, URL do Apps Script, admins, leitos, itens dos check-lists, parâmetros da amostra |
+| `config.js` | **Tudo o que se ajusta**: chaves do Firebase, URL do Apps Script, admins, leitos, itens dos check-lists, visitas por semana |
 | `app.js` | Lógica |
-| `logo.png` | Logo HOSPESC |
+| `logo.png`, `icon-*.png` | Logo e ícones do app |
+| `sw.js`, `manifest.json` | Funcionamento offline e instalação como aplicativo |
 | `firestore.rules` | Regras de segurança do banco |
 | `apps-script/Code.gs` | Backend no Google (planilhas no Drive) |
 
@@ -44,6 +45,9 @@ Siga o cabeçalho de `apps-script/Code.gs`: cole a `apiKey` do Firebase e os IDs
 - cada busca ativa salva vira uma linha na aba `BUSCA_ATIVA` (atualizada se a visita for editada);
 - admissões, saídas, transferências e bloqueios vão para a aba `MOVIMENTOS`;
 - aparece o botão **☁ Importar direto do Drive** no censo.
+- **cada notificação registrada na visita vira uma linha na planilha de respostas do formulário "Notificação – Núcleo de Segurança do Paciente"** (ID já preenchido no `Code.gs`). As colunas são encontradas pelo nome do cabeçalho; a coluna Status fica em branco para o NSP tratar como hoje. Uma notificação nunca é gravada duas vezes. Se o envio falhar (sem internet), ela fica marcada ⏳ e é reenviada ao abrir o painel.
+
+A conta Google que publicar o Apps Script precisa ter **acesso de edição** à planilha de notificações.
 
 ## Dados (coleção única `busca_ativa_nsp`)
 
@@ -52,21 +56,39 @@ Siga o cabeçalho de `apps-script/Code.gs`: cole a `apiKey` do Firebase e os IDs
 | `usuario__<e-mail>` | Perfil (nome, função, admin, ativo) |
 | `leito__<leito>` | Paciente atual: nome, admissão, procedência, HD, alergia, isolamento, dispositivos |
 | `visita__<data>_<internação>` | Uma busca ativa por paciente por dia |
-| `amostra__<data>` | Amostra sorteada do dia |
 | `mov__<data>_<id>` | Histórico de admissões, saídas, transferências e bloqueios (não pode ser apagado) |
 | `config__censo` | Último censo importado (só nome, admissão, procedência, HD, O₂ e isolamento) |
 
 Idade, sexo, data de nascimento, CNS, CPF e evolução clínica **não são guardados**.
 
-## Amostragem
+## Ciclo semanal de visitas
 
-O botão **🎲 Sortear amostra do dia** calcula:
+Todos os pacientes internados recebem **uma busca ativa por semana** (segunda a domingo), divididos em 3 visitas da equipe (`VISITAS_POR_SEMANA` no `config.js`).
 
-`n = N·Z²·p·q / [e²·(N−1) + Z²·p·q]`, com 95% de confiança (Z = 1,96), p = 0,5 e margem de ±10%.
+- O painel mostra a semana atual: quantos pacientes já foram visitados, quantos faltam e a meta aproximada por visita (total de internados ÷ 3).
+- Quando a busca ativa de um paciente é salva, o leito fica marcado **✓ Visitado** e sai da lista; ficam disponíveis só os pendentes. Para ver todos, marque "Mostrar também os já visitados nesta semana".
+- Abrir um paciente já visitado na semana abre a mesma visita, para consulta ou correção, sem criar outra.
+- Paciente que muda de leito continua contando como visitado. Paciente admitido no meio da semana entra como pendente.
 
-N é o número de leitos ativos (não bloqueados), considerando o hospital sempre lotado. A fração n/N é aplicada aos ocupados de cada setor, e o sorteio é aleatório dentro do setor. Com 45 leitos ativos, n = 31 (≈69%).
+## Uso sem internet (offline)
 
-Para mudar a margem de erro (ex.: ±5%), edite `AMOSTRA.margemErro` no `config.js`.
+O app funciona sem internet depois do **primeiro acesso online** no aparelho (é nesse acesso que ele guarda as telas, o login e os dados).
+
+- **Telas:** o `sw.js` (service worker) guarda os arquivos do app e as bibliotecas no aparelho. No celular, use "Adicionar à tela inicial" para abrir como aplicativo.
+- **Login:** a pessoa continua logada no aparelho até tocar em "Sair". Sem internet não é possível sair nem entrar com outro usuário.
+- **Dados:** leitos e visitas da semana ficam no cache do aparelho. Tudo o que for salvo offline (admissões, visitas, saídas, notificações) fica guardado e é **enviado sozinho quando a conexão voltar**, inclusive se o app for fechado e aberto de novo depois.
+- **Planilhas (Apps Script):** os envios ficam numa fila no aparelho e são repetidos ao reconectar, ao abrir o painel e a cada 2 minutos. As notificações só são marcadas como enviadas depois que a planilha confirma.
+- **Indicação na tela:** uma faixa amarela avisa quando está sem internet, e a linha de status no rodapé do painel mostra se há dados aguardando envio.
+- **Precisa de internet:** primeiro acesso, cadastrar usuário, importar o censo direto do Drive e sair do sistema.
+
+Ao publicar uma versão nova do app, troque `VERSAO` no `sw.js` para os aparelhos baixarem a atualização.
+
+## Leveza (celulares antigos)
+
+- Sem fontes baixadas da internet (usa a fonte do próprio celular), sem animações nem efeitos de desfoque.
+- Imagens comprimidas; o app inteiro (sem o Firebase) tem cerca de 50 KB compactado.
+- O Firebase é baixado uma vez e fica guardado no aparelho; o leitor de planilhas (~900 KB) só é baixado se alguém importar o censo por arquivo.
+- Código compatível com navegadores antigos (sem sintaxe recente de JavaScript). Para funcionar offline, o celular precisa de Android com Chrome atualizável ou iPhone com iOS 11.3 ou mais novo.
 
 ## Modo local (treinamento)
 

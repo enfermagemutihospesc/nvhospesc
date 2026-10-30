@@ -12,11 +12,10 @@ let db = null, auth = null, modoLocal = false;
 let usuarioEmail = '', perfil = null;
 let dataRef = hojeISO();          // data da busca ativa exibida no painel
 let setorAtivo = 'todos';
-let soSorteados = false, soPendentes = false;
+let mostrarVisitados = false;     // por padrão o painel esconde quem já foi visitado na semana
 
 let LEITOS = {};                  // bedId → documento do leito (nsp_leitos)
-let VISITAS = [];                 // visitas da dataRef (nsp_visitas)
-let AMOSTRA = null;               // amostra sorteada da dataRef (nsp_amostras)
+let VISITAS = [];                 // visitas da SEMANA da dataRef (nsp_visitas)
 let CENSO = null;                 // último censo importado (nsp_config/censo)
 
 // ── ÍNDICE DE LEITOS (a partir do config.js) ────────────────────────────────
@@ -29,7 +28,9 @@ function construirIndices() {
     SETOR[s.id] = s;
     s.grupos.forEach(g => g.leitos.forEach(l => {
       const b = { id: l.id, num: l.num, curto: l.curto, setorId: s.id, setorNome: s.nome, sigla: s.sigla,
-                  grupo: g.nome, longo: `${s.sigla} · ${g.nome} · ${l.curto}` };
+                  grupo: g.nome, longo: `${s.sigla} · ${g.nome} · ${l.curto}`,
+                  notifLeito: g.notif ? g.notif + pad2(l.num) : `${s.sigla} ${g.nome} ${l.curto}`.toUpperCase(),
+                  notifSetor: s.notifSetor || s.nome };
       BEDS.push(b); BED[b.id] = b;
     }));
   });
@@ -55,12 +56,14 @@ function esc(v) {
   if (v === null || v === undefined) return '';
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+// nv(): valor ou texto vazio (substitui o operador de coalescência, que celulares antigos não entendem)
+function nv(v) { return v === null || v === undefined ? '' : v; }
 function normTxt(s) {
-  return String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+  return String(nv(s)).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function gf(id) { const e = document.getElementById(id); return e ? e.value : ''; }
-function sf(id, v) { const e = document.getElementById(id); if (e) e.value = v ?? ''; }
+function sf(id, v) { const e = document.getElementById(id); if (e) e.value = nv(v); }
 function gRadio(name) { const e = document.querySelector(`input[name="${name}"]:checked`); return e ? e.value : ''; }
 function setRadio(name, val) {
   document.querySelectorAll(`input[name="${name}"]`).forEach(r => { r.checked = (val != null && r.value === val); });
@@ -95,14 +98,14 @@ function msgErro(e) {
 // Tudo fica numa coleção única (CFG.COLECAO, ex.: "busca_ativa_nsp").
 // O tipo de registro vai como prefixo do ID do documento:
 //   usuario__<email>   leito__<bedId>   visita__<data>_<internação>
-//   amostra__<data>    mov__<id>        config__censo
+//   mov__<id>          config__censo
 // As listagens usam faixa de ID (FieldPath.documentId), sem precisar de índice.
 // Gravações com persistência offline: se a rede cair, a escrita fica na fila
 // do aparelho e sincroniza depois; a espera é limitada (10 s) e o retorno
 // indica 'ok' ou 'pendente'.
 const TIPOS = {
   usuarios_nsp: 'usuario', nsp_leitos: 'leito', nsp_visitas: 'visita',
-  nsp_amostras: 'amostra', nsp_movimentos: 'mov', nsp_config: 'config'
+  nsp_movimentos: 'mov', nsp_config: 'config'
 };
 function _docId(col, id) { return TIPOS[col] + '__' + id; }
 function _ref(col, id) { return db.collection(CFG.COLECAO).doc(_docId(col, id)); }
@@ -121,19 +124,24 @@ const Store = {
 
   async get(col, id) {
     if (modoLocal) return this._load(col)[id] || null;
-    const s = await _ref(col, id).get();
-    return s.exists ? _semTipo(s.data()) : null;
+    try {
+      const s = await _ref(col, id).get(_fonte());
+      return s.exists ? _semTipo(s.data()) : null;
+    } catch (e) {
+      if (!navigator.onLine) return null;   // documento ainda não está no cache do aparelho
+      throw e;
+    }
   },
   async list(col) {
     if (modoLocal) return this._load(col);
-    const snap = await _faixa(col, '', '').get();
+    const snap = await _faixa(col, '', '').get(_fonte());
     const out = {}; snap.forEach(d => { out[_semPrefixo(col, d.id)] = _semTipo(d.data()); });
     return out;
   },
-  // Faixa de datas: os IDs de visitas e amostras começam pela data (AAAA-MM-DD)
+  // Faixa de datas: os IDs das visitas começam pela data (AAAA-MM-DD)
   async range(col, campo, de, ate) {
     if (modoLocal) return Object.values(this._load(col)).filter(x => x && x[campo] >= de && x[campo] <= ate);
-    const snap = await _faixa(col, de, ate).get();
+    const snap = await _faixa(col, de, ate).get(_fonte());
     return snap.docs.map(d => _semTipo(d.data())).filter(x => x && x[campo] >= de && x[campo] <= ate);
   },
   async set(col, id, data) {
@@ -160,11 +168,75 @@ const Store = {
     return _escrever(_ref(col, id).delete());
   }
 };
+// Sem internet, a gravação já fica salva no aparelho (fila do Firestore) assim
+// que é feita; não há o que esperar. Com internet, espera a confirmação do
+// servidor por até 10 s.
+function _fonte() { return navigator.onLine ? undefined : { source: 'cache' }; }
 async function _escrever(promessa) {
+  promessa.catch(e => console.warn('Firestore (gravação):', e));
+  marcarSincPendente();
+  if (!navigator.onLine) { await new Promise(r => setTimeout(r, 150)); return 'pendente'; }
   return Promise.race([
     promessa.then(() => 'ok'),
     new Promise(res => setTimeout(() => res('pendente'), 10000))
   ]);
+}
+
+// ── SINCRONIZAÇÃO (offline → online) ────────────────────────────────────────
+// 1) Firestore: guarda as gravações no aparelho e envia sozinho ao reconectar.
+//    waitForPendingWrites() avisa quando tudo chegou ao servidor.
+// 2) Apps Script (planilhas): pedidos ficam numa fila no aparelho (OUTBOX) e são
+//    reenviados ao reconectar, ao abrir o app e a cada 2 minutos.
+let _sincPendente = false;
+function marcarSincPendente() {
+  if (modoLocal || !db || _sincPendente) return;
+  _sincPendente = true;
+  atualizarStatusConexao();
+  db.waitForPendingWrites().then(() => {
+    _sincPendente = false;
+    atualizarStatusConexao();
+    if (_avisarSinc) { _avisarSinc = false; toast('✓ Dados enviados ao servidor'); }
+  }).catch(() => { _sincPendente = false; atualizarStatusConexao(); });
+}
+let _avisarSinc = false;
+
+const OUTBOX_KEY = 'nsp_outbox';
+function _outbox() { try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]'); } catch (e) { return []; } }
+function _salvarOutbox(lista) { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(lista)); } catch (e) { console.warn('outbox:', e); } }
+
+// Coloca um envio para o Apps Script na fila e tenta enviar
+function apsEnfileirar(payload) {
+  if (!CFG.APPS_SCRIPT_URL || modoLocal) return;
+  const lista = _outbox();
+  lista.push({ id: uid(), payload, em: agoraISO() });
+  _salvarOutbox(lista);
+  atualizarStatusConexao();
+  descarregarOutbox();
+}
+
+let _descarregando = false;
+async function descarregarOutbox() {
+  if (_descarregando || !navigator.onLine || !CFG.APPS_SCRIPT_URL || modoLocal) return;
+  if (!auth || !auth.currentUser) return;
+  _descarregando = true;
+  try {
+    for (const item of _outbox()) {
+      try {
+        const r = await apsFetch(item.payload);
+        if (!r || r.status !== 'ok') { console.warn('Apps Script recusou:', r); if (r && /Sessão inválida/.test(r.msg || '')) break; }
+        // enviado (ou recusado por erro de dados, que não adianta repetir): sai da fila
+        _salvarOutbox(_outbox().filter(x => x.id !== item.id));
+      } catch (e) { console.warn('Apps Script (fila):', e); break; }   // sem rede: tenta depois
+    }
+  } finally { _descarregando = false; atualizarStatusConexao(); }
+}
+
+async function aoFicarOnline() {
+  atualizarStatusConexao();
+  if (modoLocal) return;
+  if (_sincPendente) _avisarSinc = true;
+  await descarregarOutbox();
+  await reenviarNotifsPendentes();
 }
 
 // Registro de movimentos (admissão, saída, transferência, bloqueio) — também
@@ -172,7 +244,7 @@ async function _escrever(promessa) {
 async function registrarMovimento(mov) {
   const reg = { ...mov, por: usuarioEmail, porNome: perfil ? perfil.nome : '', em: agoraISO() };
   try { await Store.add('nsp_movimentos', reg); } catch (e) { console.warn('movimento:', e); }
-  apsFetch({ action: 'nsp_movimento', registro: { ...reg, leito: BED[reg.bedId] ? BED[reg.bedId].longo : reg.bedId } }, true);
+  apsEnfileirar({ action: 'nsp_movimento', registro: { ...reg, leito: BED[reg.bedId] ? BED[reg.bedId].longo : reg.bedId } });
 }
 
 // ── APPS SCRIPT ─────────────────────────────────────────────────────────────
@@ -212,10 +284,16 @@ function initFirebase() {
 function _adminFixo(email) { return CFG.ADMIN_EMAILS.map(e => e.toLowerCase()).includes((email || '').toLowerCase()); }
 function _isAdmin() { return modoLocal || _adminFixo(usuarioEmail) || !!(perfil && perfil.role === 'admin'); }
 
+function _perfilCache(email, p) {
+  const k = 'nsp_perfil__' + email;
+  try { if (p) localStorage.setItem(k, JSON.stringify(p)); else return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; }
+}
+
 async function carregarPerfil(email) {
   try {
     const p = await _comTimeout(Store.get('usuarios_nsp', email), 8000);
-    if (p) return { email, ...p };
+    if (p) { _perfilCache(email, { email, ...p }); return { email, ...p }; }
+    if (!navigator.onLine && _perfilCache(email)) return _perfilCache(email);
     if (_adminFixo(email)) {
       const novo = { nome: email.split('@')[0].toUpperCase(), funcao: 'NSP', role: 'admin', ativo: true, senhaTrocada: true, criadoEm: agoraISO() };
       Store.set('usuarios_nsp', email, novo).catch(e => console.warn('perfil admin:', e));
@@ -224,6 +302,8 @@ async function carregarPerfil(email) {
     return { email, ativo: false, semCadastro: true };
   } catch (e) {
     console.warn('Perfil:', e);
+    const cache = _perfilCache(email);
+    if (cache) return cache;
     if (_adminFixo(email)) return { email, nome: email.split('@')[0].toUpperCase(), role: 'admin', ativo: true, senhaTrocada: true };
     return { email, ativo: false, erroLeitura: true };
   }
@@ -239,7 +319,8 @@ async function fazerLogin() {
   if (!auth) { errEl.textContent = 'Conexão com o servidor não iniciada. Recarregue a página.'; return; }
   btn.disabled = true; btn.textContent = 'Entrando...';
   try {
-    try { auth.setPersistence(firebase.auth.Auth.Persistence.SESSION); } catch (_) {}
+    // LOCAL: continua logado ao fechar o app, para poder abrir sem internet.
+    try { await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL); } catch (_) {}
     await _comTimeout(auth.signInWithEmailAndPassword(email, senha), 15000, 'timeout_login');
   } catch (e) {
     const msgs = {
@@ -278,6 +359,10 @@ async function aoMudarAuth(user) {
 function fazerLogout() {
   if (!confirm('Sair do sistema?')) return;
   if (modoLocal) { location.href = location.pathname; return; }
+  if (_outbox().length || _sincPendente) {
+    if (!confirm('Há dados ainda não enviados ao servidor. Se sair agora, eles só serão enviados quando você entrar de novo neste aparelho. Sair mesmo assim?')) return;
+  }
+  if (!navigator.onLine) { toast('Sem internet: para entrar de novo será preciso conexão. Saída cancelada.', true); return; }
   if (auth) auth.signOut();
 }
 
@@ -328,6 +413,8 @@ function irPainel() {
   mostrarTela('t-painel');
   atualizarCabecalhoUsuario();
   carregarPainel();
+  if (navigator.onLine) descarregarOutbox();
+  if (_outbox().length) atualizarStatusConexao();
 }
 
 function atualizarCabecalhoUsuario() {
@@ -342,21 +429,42 @@ function atualizarCabecalhoUsuario() {
 function atualizarStatusConexao() {
   const dot = document.getElementById('sync-dot'), txt = document.getElementById('sync-txt');
   if (!dot) return;
+  const fila = modoLocal ? 0 : _outbox().length;
+  const pend = _sincPendente || fila > 0;
   if (modoLocal) { dot.className = 'sync-dot err'; txt.textContent = 'modo local – os dados ficam só neste aparelho'; }
-  else if (navigator.onLine) { dot.className = 'sync-dot ok'; txt.textContent = 'conectado – dados sincronizados com o Firebase'; }
-  else { dot.className = 'sync-dot err'; txt.textContent = 'sem internet – o que for salvo fica no aparelho e sincroniza depois'; }
+  else if (navigator.onLine) {
+    dot.className = 'sync-dot ' + (pend ? 'pend' : 'ok');
+    txt.textContent = pend ? `conectado – enviando dados guardados no aparelho${fila ? ` (${fila} para as planilhas)` : ''}...` : 'conectado – dados sincronizados';
+  } else {
+    dot.className = 'sync-dot err';
+    txt.textContent = 'sem internet – pode continuar trabalhando; tudo fica no aparelho e é enviado quando a conexão voltar' + (pend ? ' · há dados aguardando envio' : '');
+  }
+  const bar = document.getElementById('barra-offline');
+  if (bar) bar.style.display = (!modoLocal && !navigator.onLine) ? '' : 'none';
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // PAINEL DE LEITOS
 // ════════════════════════════════════════════════════════════════════════════
 function leito(id) { return LEITOS[id] || { ocupado: false }; }
+
+// ── Ciclo semanal: cada paciente internado recebe UMA busca ativa por semana ──
+// Semana de segunda a domingo. A equipe divide os pacientes em
+// CFG.VISITAS_POR_SEMANA dias de visita.
+function semanaDe(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  const desdeSeg = (dt.getDay() + 6) % 7;           // segunda = 0
+  const ini = isoDeData(new Date(y, m - 1, d - desdeSeg));
+  return { ini, fim: addDias(ini, 6) };
+}
+// Busca ativa do paciente deste leito na semana da dataRef (ou null)
 function visitaDe(id) {
   const l = leito(id);
   if (!l.ocupado || !l.internacaoId) return null;
-  return VISITAS.find(v => v.internacaoId === l.internacaoId) || null;
+  const vs = VISITAS.filter(v => v.internacaoId === l.internacaoId);
+  return vs.sort((a, b) => b.data.localeCompare(a.data))[0] || null;
 }
-function sorteado(id) { return !!(AMOSTRA && Array.isArray(AMOSTRA.leitos) && AMOSTRA.leitos.includes(id)); }
 
 function mudarDataRef(v) {
   if (!v) { sf('p-data', dataRef); return; }
@@ -369,19 +477,33 @@ async function carregarPainel() {
   sf('p-data', dataRef);
   showLoading('Carregando leitos...');
   try {
-    const [leitos, visitas, amostra, censo] = await Promise.all([
+    const sem = semanaDe(dataRef);
+    const [leitos, visitas, censo] = await Promise.all([
       Store.list('nsp_leitos'),
-      Store.range('nsp_visitas', 'data', dataRef, dataRef),
-      Store.get('nsp_amostras', dataRef),
+      Store.range('nsp_visitas', 'data', sem.ini, sem.fim),
       Store.get('nsp_config', 'censo')
     ]);
-    LEITOS = leitos || {}; VISITAS = visitas || []; AMOSTRA = amostra; CENSO = censo;
+    LEITOS = leitos || {}; VISITAS = visitas || []; CENSO = censo;
   } catch (e) {
     console.error(e);
     toast('Erro ao carregar o painel: ' + msgErro(e), true);
   } finally { hideLoading(); }
   preencherDatalistEnfermeiros();
   renderPainel();
+  reenviarNotifsPendentes();
+}
+
+// Tenta reenviar notificações que ficaram pendentes (sem rede ou sem Apps Script)
+let _reenviando = false;
+async function reenviarNotifsPendentes() {
+  if (_reenviando || !CFG.APPS_SCRIPT_URL || modoLocal || !navigator.onLine) return;
+  const pend = VISITAS.filter(v => ((v.notif && v.notif.itens) || []).some(n => !n.enviada));
+  if (!pend.length) return;
+  _reenviando = true;
+  let total = 0;
+  for (const v of pend) total += (await enviarNotifsPendentes(v)).enviadas;
+  _reenviando = false;
+  if (total) { toast(`✓ ${total} notificação(ões) pendente(s) enviada(s) ao NSP`); renderPainel(); }
 }
 
 function contagem(setorId) {
@@ -392,8 +514,7 @@ function contagem(setorId) {
     total: lista.length, ativos: ativos.length, ocupados: ocup.length,
     bloqueados: lista.length - ativos.length,
     visitados: ocup.filter(b => visitaDe(b.id)).length,
-    sorteados: lista.filter(b => sorteado(b.id)).length,
-    sorteadosVisitados: lista.filter(b => sorteado(b.id) && visitaDe(b.id)).length
+    visitadosHoje: ocup.filter(b => { const v = visitaDe(b.id); return v && v.data === dataRef; }).length
   };
 }
 
@@ -403,19 +524,18 @@ function renderPainel() {
   document.getElementById('setor-tabs').innerHTML = tabs.map(s => {
     const c = contagem(s.id);
     return `<button class="setor-tab${setorAtivo === s.id ? ' ativa' : ''}" data-setor="${s.id}">
-      ${esc(s.sigla)} <span class="setor-tab-n">${c.ocupados}/${c.ativos}</span></button>`;
+      ${esc(s.sigla)} <span class="setor-tab-n">${c.ocupados - c.visitados} pend.</span></button>`;
   }).join('');
 
   // Resumo
   const c = contagem(setorAtivo);
   const chips = [];
   chips.push(`<span class="rchip">🛏 <b>${c.ocupados}</b> ocupados de ${c.ativos} ativos · ${pct(c.ocupados, c.ativos)}</span>`);
-  chips.push(`<span class="rchip ${c.visitados && c.visitados === c.ocupados ? 'rchip-ok' : ''}">🩺 <b>${c.visitados}</b> de ${c.ocupados} visitados</span>`);
-  if (AMOSTRA && AMOSTRA.leitos) {
-    chips.push(`<span class="rchip rchip-amostra" role="button" tabindex="0" onclick="mostrarAmostra()">🎲 Amostra: <b>${c.sorteadosVisitados}</b>/${c.sorteados} sorteados visitados</span>`);
-  } else {
-    chips.push(`<span class="rchip rchip-aviso" role="button" tabindex="0" onclick="sortearAmostra()">🎲 Amostra do dia não sorteada</span>`);
-  }
+  const sem = semanaDe(dataRef), pend = c.ocupados - c.visitados;
+  const diasVisita = new Set(VISITAS.map(v => v.data)).size;
+  const porVisita = Math.ceil(c.ocupados / (CFG.VISITAS_POR_SEMANA || 3));
+  chips.push(`<span class="rchip ${pend === 0 && c.ocupados ? 'rchip-ok' : ''}">📅 Semana ${fmtD(sem.ini).slice(0, 5)} a ${fmtD(sem.fim).slice(0, 5)}: <b>${c.visitados}</b> de ${c.ocupados} pacientes visitados · <b>${pend}</b> pendente${pend === 1 ? '' : 's'}</span>`);
+  chips.push(`<span class="rchip rchip-sutil">🩺 ${diasVisita} de ${CFG.VISITAS_POR_SEMANA || 3} visitas na semana · meta ≈ ${porVisita} pacientes por visita · ${c.visitadosHoje} hoje</span>`);
   if (_isAdmin() && c.bloqueados) chips.push(`<span class="rchip">🔒 ${c.bloqueados} bloqueados</span>`);
   if (CENSO && CENSO.importadoEm) chips.push(`<span class="rchip rchip-sutil">📥 Censo de ${fmtDH(CENSO.importadoEm)}</span>`);
   document.getElementById('resumo-chips').innerHTML = chips.join('');
@@ -429,8 +549,7 @@ function renderPainel() {
       const cards = g.leitos.filter(lc => {
         const l = leito(lc.id);
         if (l.bloqueado && !_isAdmin()) return false;
-        if (soSorteados && !sorteado(lc.id)) return false;
-        if (soPendentes && !(l.ocupado && !visitaDe(lc.id))) return false;
+        if (!mostrarVisitados && l.ocupado && visitaDe(lc.id)) return false;
         return true;
       }).map(lc => cardLeito(lc.id));
       if (!cards.length) return;
@@ -441,7 +560,7 @@ function renderPainel() {
     if (htmlSetor) html += (setorAtivo === 'todos' ? `<div class="setor-t">${esc(s.nome)}</div>` : '') + htmlSetor;
   });
   document.getElementById('painel-grid').innerHTML = html ||
-    `<div class="ind-vazio">${soSorteados && !AMOSTRA ? 'A amostra do dia ainda não foi sorteada.' : 'Nenhum leito para mostrar com os filtros atuais.'}</div>`;
+    `<div class="ind-vazio">${c.ocupados && c.visitados === c.ocupados ? '✓ Todos os pacientes internados já foram visitados nesta semana.' : 'Nenhum leito para mostrar com os filtros atuais.'}</div>`;
 }
 
 function chipsDispositivos(disp) {
@@ -455,9 +574,9 @@ function chipsDispositivos(disp) {
 }
 
 function cardLeito(id) {
-  const b = BED[id], l = leito(id), v = visitaDe(id), sort = sorteado(id);
-  const cls = ['leito-card', l.bloqueado ? 'bloqueado' : l.ocupado ? 'ocupado' : 'vago', v ? 'visitado' : '', sort ? 'sorteado' : ''].join(' ');
-  const cab = `<div class="leito-num"><span>${esc(b.curto)}</span>${sort ? '<span class="leito-sorteio" title="Sorteado na amostra do dia">🎲</span>' : ''}</div>`;
+  const b = BED[id], l = leito(id), v = visitaDe(id);
+  const cls = ['leito-card', l.bloqueado ? 'bloqueado' : l.ocupado ? 'ocupado' : 'vago', v ? 'visitado' : ''].join(' ');
+  const cab = `<div class="leito-num"><span>${esc(b.curto)}</span>${v ? '<span title="Visitado nesta semana">✓</span>' : ''}</div>`;
 
   if (l.bloqueado) {
     return `<div class="${cls}" data-bed="${id}">${cab}
@@ -481,17 +600,17 @@ function cardLeito(id) {
   if (l.alergia === 'Sim') badges.push(`<span class="lb lb-high">⚠ Alergia</span>`);
   if (v) {
     const nc = v.scores && v.scores.nsp ? v.scores.nsp.naoConformes : 0;
-    const bnc = v.scores ? (v.scores.bundlesAvaliados || 0) - (v.scores.bundlesAderentes || 0) : 0;
-    badges.push(`<span class="lb lb-ok">✓ Visitado${v.parcial ? ' (parcial)' : ''}</span>`);
+    badges.push(`<span class="lb lb-ok">✓ Visitado ${fmtD(v.data).slice(0, 5)}${v.parcial ? ' (parcial)' : ''}</span>`);
+    const nts = (v.notif && v.notif.itens) || [];
+    if (nts.length) badges.push(`<span class="lb ${nts.some(n => !n.enviada) ? 'lb-warn' : 'lb-isol'}">⚠ ${nts.length} notif.${nts.some(n => !n.enviada) ? ' ⏳' : ''}</span>`);
     if (nc) badges.push(`<span class="lb lb-high">${nc} NC NSP</span>`);
-    if (bnc > 0) badges.push(`<span class="lb lb-warn">${bnc} bundle${bnc > 1 ? 's' : ''} ✗</span>`);
-  } else if (sort) badges.push(`<span class="lb lb-warn">Pendente</span>`);
+  } else badges.push(`<span class="lb lb-warn">Pendente na semana</span>`);
 
   return `<div class="${cls}" data-bed="${id}" role="button" tabindex="0" aria-label="${esc(b.longo)} – ${esc(l.pac)}">${cab}
     <div class="leito-info"><div class="leito-pac">${esc(l.pac) || '–'}</div>
       <div class="leito-diag">${di ? 'DI ' + di : ''}${l.procedencia ? ' · ' + esc(l.procedencia) : ''}</div></div>
     <div class="leito-badge-row">${badges.join('')}</div>
-    <button class="leito-iras-btn${v ? ' leito-iras-btn--preenchido' : ''}" data-acao="visita">🩺 BUSCA ATIVA${v ? ' ✓' : ''}</button>
+    <button class="leito-iras-btn${v ? ' leito-iras-btn--preenchido' : ''}" data-acao="visita">${v ? '✓ VISITADO EM ' + fmtD(v.data).slice(0, 5) : '🩺 BUSCA ATIVA'}</button>
     <div class="leito-acoes-row">
       <button class="leito-alta-btn" data-acao="saida">SAÍDA</button>
       <button class="leito-transf-btn" data-acao="transf">↔ TRANSFERIR</button>
@@ -724,93 +843,6 @@ async function confirmarBloqueio() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// AMOSTRAGEM (95% de confiança, população = leitos ativos como se lotado)
-// ════════════════════════════════════════════════════════════════════════════
-function calcularN(N) {
-  const { z, margemErro: e, p } = CFG.AMOSTRA, q = 1 - p;
-  if (N <= 0) return 0;
-  if (N === 1) return 1;
-  return Math.min(N, Math.ceil((N * z * z * p * q) / (e * e * (N - 1) + z * z * p * q)));
-}
-
-function _embaralhar(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const r = new Uint32Array(1); crypto.getRandomValues(r);
-    const j = r[0] % (i + 1);
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-async function sortearAmostra() {
-  if (AMOSTRA && Array.isArray(AMOSTRA.leitos)) { mostrarAmostra(); return; }
-  await gerarAmostra();
-}
-
-async function gerarAmostra() {
-  const ativos = BEDS.filter(b => !leito(b.id).bloqueado);
-  const N = ativos.length, n = calcularN(N), f = N ? n / N : 0;
-  const porSetor = {}, sorteados = [];
-  CFG.SETORES.forEach(s => {
-    const ocup = BEDS.filter(b => b.setorId === s.id && leito(b.id).ocupado && !leito(b.id).bloqueado).map(b => b.id);
-    const k = Math.min(ocup.length, Math.ceil(f * ocup.length));
-    sorteados.push(..._embaralhar(ocup).slice(0, k));
-    porSetor[s.id] = { ativos: ativos.filter(b => b.setorId === s.id).length, ocupados: ocup.length, sorteados: k };
-  });
-  if (!sorteados.length) { toast('Não há pacientes admitidos no painel para sortear. Importe o censo ou admita os pacientes primeiro.', true); return; }
-  const ordem = id => BEDS.findIndex(b => b.id === id);
-  sorteados.sort((a, b) => ordem(a) - ordem(b));
-  const doc = { data: dataRef, N, n, f, z: CFG.AMOSTRA.z, confianca: CFG.AMOSTRA.confianca, margemErro: CFG.AMOSTRA.margemErro,
-                p: CFG.AMOSTRA.p, leitos: sorteados, porSetor, geradoPor: usuarioEmail, geradoPorNome: perfil ? perfil.nome : '', geradoEm: agoraISO() };
-  try {
-    showLoading('Sorteando...');
-    await Store.set('nsp_amostras', dataRef, doc);
-    AMOSTRA = doc;
-    renderPainel();
-    mostrarAmostra();
-  } catch (e) { toast('Erro ao salvar a amostra: ' + msgErro(e), true); }
-  finally { hideLoading(); }
-}
-
-async function resortearAmostra() {
-  const visitados = (AMOSTRA.leitos || []).filter(id => visitaDe(id)).length;
-  if (!confirm(`Sortear uma nova amostra para ${fmtD(dataRef)}?${visitados ? `\n\n${visitados} leito(s) da amostra atual já foram visitados; as visitas continuam salvas.` : ''}`)) return;
-  fecharModal('modal-amostra');
-  await gerarAmostra();
-}
-
-function mostrarAmostra() {
-  if (!AMOSTRA) return;
-  const a = AMOSTRA;
-  const linhasSetor = CFG.SETORES.map(s => {
-    const ps = (a.porSetor || {})[s.id] || { ativos: 0, ocupados: 0, sorteados: 0 };
-    const vis = (a.leitos || []).filter(id => BED[id] && BED[id].setorId === s.id && visitaDe(id)).length;
-    return `<tr><td>${esc(s.nome)}</td><td>${ps.ativos}</td><td>${ps.ocupados}</td><td><b>${ps.sorteados}</b></td><td>${vis}</td></tr>`;
-  }).join('');
-  const lista = (a.leitos || []).map(id => {
-    const l = leito(id), v = visitaDe(id);
-    return `<button class="amostra-item${v ? ' feito' : ''}" data-bed="${id}">
-      <span>${v ? '✓' : '○'} ${esc(BED[id] ? BED[id].longo : id)}</span><small>${esc(l.pac || 'leito liberado')}</small></button>`;
-  }).join('');
-  document.getElementById('amostra-corpo').innerHTML = `
-    <div class="amostra-formula">
-      <div><b>N = ${a.N}</b> leitos ativos (cálculo como se o hospital estivesse lotado)</div>
-      <div>Confiança ${esc(a.confianca || '95%')} (Z = ${a.z}) · margem de erro ±${Math.round(a.margemErro * 100)}% · p = ${a.p}</div>
-      <div><b>n = ${a.n}</b> → fração de amostragem <b>${pct(a.n, a.N)}</b>, aplicada aos leitos ocupados de cada setor</div>
-      <div class="hint">Sorteado por ${esc(a.geradoPorNome || a.geradoPor)} em ${fmtDH(a.geradoEm)} · ${a.leitos.length} leitos sorteados</div>
-    </div>
-    <table class="tab-simples"><thead><tr><th>Setor</th><th>Ativos</th><th>Ocupados</th><th>Sorteados</th><th>Visitados</th></tr></thead><tbody>${linhasSetor}</tbody></table>
-    <div class="amostra-lista">${lista}</div>
-    <p class="hint">A amostra só vale estatisticamente se os sorteados forem visitados. Pacientes de maior risco podem ser visitados além dela, mas não substituem os sorteados.</p>
-    <div class="btn-row">
-      <button class="btn btn-sec" onclick="resortearAmostra()">🎲 Sortear novamente</button>
-      <button class="btn btn-pri" onclick="fecharModal('modal-amostra');soSorteados=true;document.getElementById('f-so-sorteados').checked=true;renderPainel();">Mostrar só os sorteados</button>
-    </div>`;
-  abrirModal('modal-amostra');
-}
-
-// ════════════════════════════════════════════════════════════════════════════
 // AVALIAÇÃO (compartilhada entre formulário e indicadores)
 // ════════════════════════════════════════════════════════════════════════════
 function nspVisiveis(ctx) {
@@ -827,72 +859,45 @@ function avaliarNSP(itens, respostas) {
   return { conformes, naoConformes, na, pendentes, avaliados, pct: avaliados ? Math.round(100 * conformes / avaliados) : null };
 }
 
-function avaliarItemBundle(item, r) {
-  if (!r) return 'sem_resposta';
-  if (r === 'na') return 'na';
-  if (item.criterio === 'info') return 'info';
-  if (item.criterio === 'nao') return r === 'nao' ? 'aderente' : 'nao_aderente';
-  return r === 'sim' ? 'aderente' : 'nao_aderente';
-}
-
-// Tudo ou nada: aderente só se todos os itens pontuáveis respondidos forem aderentes
-function avaliarBundle(bundle, respostas) {
-  let aderentes = 0, naoAderentes = 0, na = 0, info = 0, semResposta = 0;
-  bundle.itens.forEach(it => {
-    const v = avaliarItemBundle(it, respostas[it.id]);
-    if (v === 'aderente') aderentes++; else if (v === 'nao_aderente') naoAderentes++;
-    else if (v === 'na') na++; else if (v === 'info') info++; else semResposta++;
-  });
-  let status;
-  if (semResposta > 0) status = 'incompleto';
-  else if (aderentes + naoAderentes === 0) status = 'na';
-  else status = naoAderentes ? 'nao_aderente' : 'aderente';
-  return { status, aderentes, naoAderentes, na, info, semResposta, total: bundle.itens.length };
-}
-
-function presencaDisp(d) {
-  return { cvc: !!d.cvc, avp: !!d.avp, svd: d.elim === 'SVD', via_aerea: d.o2 === 'TOT' || d.o2 === 'TQT' };
-}
-function bundlesAtivos(d) { const p = presencaDisp(d); return CFG.BUNDLES.filter(b => p[b.disp]); }
-
 // ════════════════════════════════════════════════════════════════════════════
 // VISITA (busca ativa do leito)
 // ════════════════════════════════════════════════════════════════════════════
-let visitaBedId = null, visitaExistente = null, visitaSuja = false;
-const VIS = { nsp: {}, iras: {} };
+let visitaBedId = null, visitaExistente = null, visitaData = null, visitaSuja = false;
+const VIS = { nsp: {} };
 
 function abrirVisita(bedId) {
   const l = leito(bedId);
   if (!l.ocupado) { abrirAdmissao(bedId); return; }
-  visitaBedId = bedId;
   const v = visitaDe(bedId);
+  // Paciente já visitado nesta semana: não abre visita nova, só a existente (consulta/correção)
+  if (v && !confirm(`${l.pac} já recebeu a busca ativa desta semana (${fmtD(v.data)}, por ${v.autorNome || v.autor}).\n\nAbrir essa visita para consultar ou corrigir?`)) return;
+  visitaBedId = bedId;
   visitaExistente = v;
+  visitaData = v ? v.data : dataRef;
   const disp = v ? (v.disp || {}) : (l.disp || {});
 
   document.getElementById('v-titulo').textContent = 'Busca ativa – ' + BED[bedId].curto;
-  document.getElementById('v-sub').textContent = `${BED[bedId].setorNome} · ${BED[bedId].grupo} · ${fmtD(dataRef)}${v ? ' · editando visita salva' : ''}`;
-  document.getElementById('v-badge-sorteado').style.display = sorteado(bedId) ? '' : 'none';
+  document.getElementById('v-sub').textContent = `${BED[bedId].setorNome} · ${BED[bedId].grupo} · ${fmtD(visitaData)}${v ? ' · corrigindo a visita da semana' : ''}`;
   renderIdentVisita();
 
   sf('v-enf', v ? v.enfermeiro : '');
   setRadio('v-alergia', v ? v.alergia : l.alergia);
   setRadio('v-isol', v ? v.isolamento : (l.isolamento || ''));
   VIS.nsp = { ...((v && v.nsp) || {}) };
-  VIS.iras = { ...((v && v.iras && v.iras.respostas) || {}) };
 
   setRadio('v-elim', disp.elim || '');
-  sf('v-svd-data', disp.svdData);
+  sf('v-svd-data', disp.svdData); setRadio('v-svd-ck', disp.svdCk || '');
   setRadio('v-cvc', disp.cvc === true ? 'Sim' : disp.cvc === false ? 'Não' : '');
   sf('v-cvc-tipo', disp.cvcTipo); sf('v-cvc-data', disp.cvcData);
+  setRadio('v-cvc-ck', disp.cvcCk || ''); sf('v-cvc-curativo', disp.cvcCurativo);
   setRadio('v-avp', disp.avp === true ? 'Sim' : disp.avp === false ? 'Não' : '');
   sf('v-avp-data', disp.avpData);
   setRadio('v-o2', disp.o2 || '');
   sf('v-va-data', disp.vaData); sf('v-filtro-data', disp.filtroData);
 
-  const notif = (v && v.notif) || {};
-  renderEventos(notif.eventos || []);
-  setRadio('v-notificado', notif.notificado || '');
-  sf('v-notif-obs', notif.obs); sf('v-obs', v ? v.obs : '');
+  NOTIFS = JSON.parse(JSON.stringify((v && v.notif && v.notif.itens) || []));
+  renderNotifs();
+  sf('v-obs', v ? v.obs : '');
 
   renderNSPItens();
   onMudaDisp(true);
@@ -901,7 +906,7 @@ function abrirVisita(bedId) {
 }
 
 function renderIdentVisita() {
-  const l = leito(visitaBedId), di = diasDesde(l.adm, dataRef);
+  const l = leito(visitaBedId), di = diasDesde(l.adm, visitaData);
   document.getElementById('v-ident').innerHTML = `
     <div><span class="ident-l">Paciente</span><span class="ident-v">${esc(l.pac)}</span></div>
     <div><span class="ident-l">Admissão</span><span class="ident-v">${fmtD(l.adm)}${di ? ' · DI ' + di : ''}</span></div>
@@ -932,7 +937,7 @@ function renderNSPItens() {
     const opcoes = it.tipo === 'cnc_na' ? [...OPC_CNC, OPC_NA] : OPC_CNC;
     html += `<div class="iras-item${classeNSP(r)}" data-nsp="${it.id}">
       <div class="iras-item-texto">${esc(it.texto)}</div>
-      <div class="iras-radios">${botoesResposta(opcoes, r)}</div></div>`;
+      <div class="iras-radios">${botoesResposta(opcoes, r)}${r === 'NC' ? `<button type="button" class="btn-mini btn-mini-nsp btn-notificar" data-notificar="${it.id}">⚠ Notificar</button>` : ''}</div></div>`;
   });
   document.getElementById('v-nsp-itens').innerHTML = html;
 }
@@ -947,9 +952,10 @@ function dispAtual() {
   const elim = gRadio('v-elim'), cvc = gRadio('v-cvc'), avp = gRadio('v-avp'), o2 = gRadio('v-o2');
   const via = o2 === 'TOT' || o2 === 'TQT';
   return {
-    elim, svdData: elim === 'SVD' ? gf('v-svd-data') : '',
+    elim, svdData: elim === 'SVD' ? gf('v-svd-data') : '', svdCk: elim === 'SVD' ? gRadio('v-svd-ck') : '',
     cvc: cvc === 'Sim' ? true : cvc === 'Não' ? false : null,
     cvcTipo: cvc === 'Sim' ? gf('v-cvc-tipo') : '', cvcData: cvc === 'Sim' ? gf('v-cvc-data') : '',
+    cvcCk: cvc === 'Sim' ? gRadio('v-cvc-ck') : '', cvcCurativo: cvc === 'Sim' ? gf('v-cvc-curativo') : '',
     avp: avp === 'Sim' ? true : avp === 'Não' ? false : null,
     avpData: avp === 'Sim' ? gf('v-avp-data') : '',
     o2, vaData: via ? gf('v-va-data') : '', filtroData: via ? gf('v-filtro-data') : ''
@@ -963,58 +969,17 @@ function onMudaDisp(inicial) {
   document.getElementById('wrap-cvc').style.display = d.cvc ? '' : 'none';
   document.getElementById('wrap-avp').style.display = d.avp ? '' : 'none';
   document.getElementById('wrap-va').style.display = (d.o2 === 'TOT' || d.o2 === 'TQT') ? '' : 'none';
-  renderBundles();
   atualizarDias();
   atualizarScore();
 }
 
 function atualizarDias() {
-  [['v-svd-data', 'd-svd'], ['v-cvc-data', 'd-cvc'], ['v-avp-data', 'd-avp'], ['v-va-data', 'd-va'], ['v-filtro-data', 'd-filtro']].forEach(([inp, tag]) => {
-    const n = diasDesde(gf(inp), dataRef);
+  [['v-svd-data', 'd-svd'], ['v-cvc-data', 'd-cvc'], ['v-cvc-curativo', 'd-cvc-curativo'], ['v-avp-data', 'd-avp'], ['v-va-data', 'd-va'], ['v-filtro-data', 'd-filtro']].forEach(([inp, tag]) => {
+    const n = diasDesde(gf(inp), visitaData);
     const el = document.getElementById(tag);
     el.textContent = n ? 'D' + n : '';
     el.title = n ? `${n}º dia (contando a data informada como D1)` : '';
   });
-}
-
-function infoBadgeBundle(av) {
-  if (av.status === 'na') return { t: 'N/A', w: 0, c: 'bar-na' };
-  if (av.status === 'incompleto') {
-    const resp = av.total - av.semResposta;
-    return { t: `${resp}/${av.total} · preenchendo`, w: Math.round(100 * resp / av.total), c: 'bar-incompleto' };
-  }
-  if (av.status === 'aderente') return { t: `✓ ADERENTE`, w: 100, c: 'bar-aderente' };
-  return { t: `✗ NÃO ADERENTE · ${av.naoAderentes} falha${av.naoAderentes > 1 ? 's' : ''}`, w: 100, c: 'bar-nao-aderente' };
-}
-
-function classeItemBundle(item, r) {
-  const v = avaliarItemBundle(item, r);
-  return v === 'aderente' ? ' aderente' : v === 'nao_aderente' ? ' nao-aderente' : v === 'na' ? ' item-na' : v === 'info' ? ' item-info' : '';
-}
-
-function renderBundles() {
-  const ativos = bundlesAtivos(dispAtual());
-  const cont = document.getElementById('v-bundles');
-  if (!ativos.length) {
-    cont.innerHTML = `<div class="ind-vazio">Sem dispositivo invasivo marcado (CVC, AVP, SVD, TOT/TQT). Nenhum bundle se aplica a este paciente.</div>`;
-    return;
-  }
-  cont.innerHTML = ativos.map(b => {
-    const av = avaliarBundle(b, VIS.iras), bi = infoBadgeBundle(av);
-    const itens = b.itens.map(it => {
-      const r = VIS.iras[it.id] || '';
-      const opcoes = it.opcoes
-        ? it.opcoes.map(o => ({ v: o.toLowerCase(), t: o, cls: 'na' }))
-        : [{ v: 'sim', t: '✓ SIM', cls: it.criterio === 'nao' ? 'nao' : 'sim' }, { v: 'nao', t: '✗ NÃO', cls: it.criterio === 'nao' ? 'sim' : 'nao' }, ...(it.na ? [{ v: 'na', t: 'N/A', cls: 'na' }] : [])];
-      return `<div class="iras-item${classeItemBundle(it, r)}" data-item="${it.id}" data-bundle="${b.id}">
-        <div class="iras-item-texto">${esc(it.texto)}${it.criterio === 'info' ? ' <span class="tag-info">registro</span>' : ''}</div>
-        <div class="iras-radios">${botoesResposta(opcoes, r)}</div></div>`;
-    }).join('');
-    return `<div class="iras-bundle" id="bundle-${b.id}">
-      <div class="iras-bundle-header"><span>${b.icone} ${esc(b.titulo)}</span><span class="iras-bundle-badge" id="badge-${b.id}">${bi.t}</span></div>
-      ${itens}
-      <div class="iras-score-bar"><div class="iras-score-bar-fill ${bi.c}" id="bar-${b.id}" style="width:${bi.w}%"></div></div></div>`;
-  }).join('');
 }
 
 function aoClicarResposta(ev) {
@@ -1027,41 +992,119 @@ function aoClicarResposta(ev) {
   const r = btn.dataset.r;
   item.querySelectorAll('.iras-radio-btn').forEach(x => { x.classList.remove('ativo'); x.setAttribute('aria-pressed', 'false'); });
   btn.classList.add('ativo'); btn.setAttribute('aria-pressed', 'true');
-  item.classList.remove('aderente', 'nao-aderente', 'item-na', 'item-info');
-
+  item.classList.remove('aderente', 'nao-aderente', 'item-na');
   if (item.dataset.nsp) {
     VIS.nsp[item.dataset.nsp] = r;
     const c = classeNSP(r).trim(); if (c) item.classList.add(c);
-  } else if (item.dataset.item) {
-    const b = CFG.BUNDLES.find(x => x.id === item.dataset.bundle);
-    const it = b.itens.find(x => x.id === item.dataset.item);
-    VIS.iras[it.id] = r;
-    const c = classeItemBundle(it, r).trim(); if (c) item.classList.add(c);
-    const bi = infoBadgeBundle(avaliarBundle(b, VIS.iras));
-    document.getElementById('badge-' + b.id).textContent = bi.t;
-    const bar = document.getElementById('bar-' + b.id);
-    bar.className = 'iras-score-bar-fill ' + bi.c; bar.style.width = bi.w + '%';
+    const radios = item.querySelector('.iras-radios'), bn = radios.querySelector('[data-notificar]');
+    if (r === 'NC' && !bn) radios.insertAdjacentHTML('beforeend', `<button type="button" class="btn-mini btn-mini-nsp btn-notificar" data-notificar="${item.dataset.nsp}">⚠ Notificar</button>`);
+    if (r !== 'NC' && bn) bn.remove();
   }
   atualizarScore();
 }
 
-function renderEventos(marcados) {
-  document.getElementById('v-eventos').innerHTML = CFG.EVENTOS_NOTIFICACAO.map(e =>
-    `<label class="ci"><input type="checkbox" class="v-evento" value="${esc(e)}"${marcados.includes(e) ? ' checked' : ''}> ${esc(e)}</label>`).join('');
-  atualizarNotificado();
+// ── NOTIFICAÇÕES (uma linha por notificação na planilha do NSP) ─────────────
+let NOTIFS = [];
+
+function horaAgora() { const d = new Date(); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+
+function addNotif(categoria, descricao) {
+  const b = BED[visitaBedId];
+  NOTIFS.push({ id: uid(), categoria: categoria || '', outros: '', data: visitaData, hora: horaAgora(),
+                descricao: descricao || '', dano: 'Desconhecido', danoDesc: '', obs: '', comPaciente: 'Sim',
+                leito: b.notifLeito, setor: b.notifSetor, enviada: false });
+  visitaSuja = true;
+  renderNotifs();
+  const cards = document.querySelectorAll('#v-notifs .notif-card');
+  if (cards.length) cards[cards.length - 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
-function eventosMarcados() { return Array.from(document.querySelectorAll('.v-evento:checked')).map(e => e.value); }
-function atualizarNotificado() { document.getElementById('wrap-notificado').style.display = eventosMarcados().length ? '' : 'none'; }
+
+function renderNotifs() {
+  const cont = document.getElementById('v-notifs');
+  if (!NOTIFS.length) { cont.innerHTML = '<div class="hint">Nenhuma notificação nesta visita.</div>'; return; }
+  const opt = (lista, v) => lista.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('');
+  const setores = [...new Set(CFG.SETORES.map(s => s.notifSetor).filter(Boolean))];
+  cont.innerHTML = NOTIFS.map((n, i) => {
+    const ro = n.enviada ? ' disabled' : '';
+    return `<div class="notif-card${n.enviada ? ' enviada' : ''}" data-i="${i}">
+      <div class="notif-cab"><b>Notificação ${i + 1}</b>
+        <span class="notif-status">${n.enviada ? '✓ Enviada à planilha do NSP em ' + fmtDH(n.enviadaEm) : '⏳ Será enviada ao salvar'}</span>
+        ${n.enviada ? '' : `<button type="button" class="btn-mini btn-mini-nsp" data-rm="${i}">Remover</button>`}</div>
+      <div class="fl"><label>Relacionada a</label><select data-f="categoria"${ro}><option value="">– selecione –</option>${opt(CFG.NOTIF_CATEGORIAS, n.categoria)}</select></div>
+      <div class="fl" ${n.categoria === 'Outros' ? '' : 'hidden'}><label>Descreva "Outros"</label><input type="text" data-f="outros" value="${esc(n.outros)}"${ro}></div>
+      <div class="fl"><label>Setor</label><select data-f="setor"${ro}>${opt(setores.includes(n.setor) ? setores : [n.setor, ...setores], n.setor)}</select></div>
+      <div class="dc">
+        <div class="fl"><label>Data em que ocorreu</label><input type="date" data-f="data" value="${esc(n.data)}" max="${hojeISO()}"${ro}></div>
+        <div class="fl"><label>Horário</label><input type="time" data-f="hora" value="${esc(n.hora)}"${ro}></div>
+      </div>
+      <div class="fl"><label>Leito</label><input type="text" data-f="leito" value="${esc(n.leito)}"${ro}></div>
+      <div class="fl notif-desc"><label>Descreva o incidente/evento</label><textarea data-f="descricao" rows="3"${ro}>${esc(n.descricao)}</textarea></div>
+      <div class="dc">
+        <div class="fl"><label>Houve dano ao paciente?</label><select data-f="dano"${ro}>${opt(['Desconhecido', 'Não', 'Sim'], n.dano)}</select></div>
+        <div class="fl"><label>Evento com paciente?</label><select data-f="comPaciente"${ro}>${opt(['Sim', 'Não'], n.comPaciente)}</select></div>
+      </div>
+      <div class="fl" ${n.dano === 'Sim' ? '' : 'hidden'}><label>Descreva o dano</label><input type="text" data-f="danoDesc" value="${esc(n.danoDesc)}"${ro}></div>
+      <div class="fl"><label>Outras observações</label><input type="text" data-f="obs" value="${esc(n.obs)}"${ro}></div>
+    </div>`;
+  }).join('');
+}
+
+function aoEditarNotif(ev) {
+  const el = ev.target, card = el.closest('.notif-card');
+  if (!card || !el.dataset.f) return;
+  const n = NOTIFS[+card.dataset.i];
+  if (!n || n.enviada) return;
+  n[el.dataset.f] = el.value;
+  visitaSuja = true;
+  if (ev.type === 'change' && (el.dataset.f === 'categoria' || el.dataset.f === 'dano')) renderNotifs();
+}
+
+function validarNotifs() {
+  const erros = [];
+  NOTIFS.forEach((n, i) => {
+    if (n.enviada) return;
+    if (!n.categoria) erros.push(`Notificação ${i + 1}: escolha a que está relacionada`);
+    if (n.categoria === 'Outros' && !n.outros.trim()) erros.push(`Notificação ${i + 1}: descreva o "Outros"`);
+    if (!n.descricao.trim()) erros.push(`Notificação ${i + 1}: descreva o incidente`);
+    if (!n.data) erros.push(`Notificação ${i + 1}: informe a data`);
+  });
+  return erros;
+}
+
+// Linha no formato da planilha de respostas do formulário do NSP
+function linhaNotif(n, v) {
+  return {
+    id: n.id, categoria: n.categoria, outros: n.categoria === 'Outros' ? n.outros.trim() : '',
+    setor: n.setor, data: n.data, hora: n.hora || '', descricao: n.descricao.trim(),
+    dano: n.dano, danoDesc: n.dano === 'Sim' ? n.danoDesc.trim() : '',
+    obs: [n.obs.trim(), `Registrada na busca ativa NSP/CCIH por ${v.autorNome || v.autor}`].filter(Boolean).join(' · '),
+    comPaciente: n.comPaciente, leito: n.leito + (n.comPaciente === 'Sim' && v.pac ? ' - ' + v.pac : '')
+  };
+}
+
+// Envia à planilha as notificações ainda não enviadas de uma visita salva
+async function enviarNotifsPendentes(v) {
+  const pend = ((v.notif && v.notif.itens) || []).filter(n => !n.enviada);
+  if (!pend.length || !CFG.APPS_SCRIPT_URL || modoLocal || !navigator.onLine) return { enviadas: 0, pendentes: pend.length };
+  try {
+    const r = await apsFetch({ action: 'nsp_notificacao', itens: pend.map(n => linhaNotif(n, v)) });
+    if (!r || r.status !== 'ok') throw new Error((r && r.msg) || 'sem resposta');
+    const ok = new Set(r.gravados || pend.map(n => n.id));
+    const em = agoraISO();
+    v.notif.itens.forEach(n => { if (ok.has(n.id)) { n.enviada = true; n.enviadaEm = em; } });
+    await Store.set('nsp_visitas', v.id, v);
+    return { enviadas: ok.size, pendentes: pend.length - ok.size };
+  } catch (e) {
+    console.warn('Notificações:', e);
+    return { enviadas: 0, pendentes: pend.length, erro: msgErro(e) };
+  }
+}
 
 function atualizarScore() {
   const nsp = avaliarNSP(nspVisiveis(ctxVisita()), VIS.nsp);
-  const ativos = bundlesAtivos(dispAtual());
-  let ader = 0, aval = 0, incomp = 0;
-  ativos.forEach(b => { const av = avaliarBundle(b, VIS.iras); if (av.status === 'aderente') { ader++; aval++; } else if (av.status === 'nao_aderente') aval++; else if (av.status === 'incompleto') incomp++; });
   const corNSP = nsp.pct === null ? '' : nsp.pct === 100 ? 'ok' : nsp.pct >= 80 ? 'medio' : 'ruim';
   document.getElementById('v-score').innerHTML = `
-    <span class="score-chip ${corNSP}">NSP: ${nsp.conformes}/${nsp.avaliados} conformes${nsp.pct !== null ? ' (' + nsp.pct + '%)' : ''}${nsp.pendentes ? ` · ${nsp.pendentes} pendente${nsp.pendentes > 1 ? 's' : ''}` : ''}</span>
-    <span class="score-chip ${aval && ader === aval && !incomp ? 'ok' : aval && ader < aval ? 'ruim' : ''}">CCIH: ${ativos.length ? `${ader}/${aval} bundles aderentes${incomp ? ` · ${incomp} incompleto${incomp > 1 ? 's' : ''}` : ''}` : 'sem bundles'}</span>`;
+    <span class="score-chip ${corNSP}">NSP: ${nsp.conformes}/${nsp.avaliados} conformes${nsp.pct !== null ? ' (' + nsp.pct + '%)' : ''}${nsp.pendentes ? ` · ${nsp.pendentes} pendente${nsp.pendentes > 1 ? 's' : ''}` : ''}</span>`;
 }
 
 function voltarPainel() {
@@ -1076,14 +1119,7 @@ async function salvarVisita() {
   if (!l.ocupado) { toast('Este leito não tem paciente.', true); return; }
   const ctx = ctxVisita(), visiveis = nspVisiveis(ctx);
   const nsp = {}; visiveis.forEach(it => { if (VIS.nsp[it.id]) nsp[it.id] = VIS.nsp[it.id]; });
-  const disp = dispAtual(), ativos = bundlesAtivos(disp);
-  const respostas = {}, bundles = {};
-  let pendB = 0;
-  ativos.forEach(bd => {
-    bd.itens.forEach(it => { if (VIS.iras[it.id]) respostas[it.id] = VIS.iras[it.id]; });
-    const av = avaliarBundle(bd, respostas);
-    bundles[bd.id] = av; pendB += av.semResposta;
-  });
+  const disp = dispAtual();
   const alergia = gRadio('v-alergia'), isolamento = gRadio('v-isol');
   const sc = avaliarNSP(visiveis, nsp);
 
@@ -1096,23 +1132,22 @@ async function salvarVisita() {
   if (disp.cvc === null) faltando.push('CVC');
   if (disp.avp === null) faltando.push('AVP');
   if (!disp.o2) faltando.push('O₂/VM');
-  if (pendB) faltando.push(`${pendB} item(ns) dos bundles`);
-  const eventos = eventosMarcados();
-  if (eventos.length && !gRadio('v-notificado')) faltando.push('se o evento já foi notificado');
+  if (disp.elim === 'SVD' && !disp.svdCk) faltando.push('check-list de inserção da SVD');
+  if (disp.cvc && !disp.cvcCk) faltando.push('check-list de inserção do CVC');
+  const errosNotif = validarNotifs();
+  if (errosNotif.length) { toast(errosNotif[0], true); document.getElementById('v-notifs').scrollIntoView({ behavior: 'smooth' }); return; }
   if (faltando.length && !confirm('Ainda falta preencher:\n• ' + faltando.join('\n• ') + '\n\nSalvar como visita PARCIAL?')) return;
 
-  const avaliados = Object.values(bundles).filter(x => x.status === 'aderente' || x.status === 'nao_aderente');
-  const id = dataRef + '_' + l.internacaoId;
+  const id = visitaData + '_' + l.internacaoId;
   const doc = {
-    id, data: dataRef, bedId, setor: b.setorId, grupo: b.grupo, leito: b.longo,
+    id, data: visitaData, semana: semanaDe(visitaData).ini, bedId, setor: b.setorId, grupo: b.grupo, leito: b.longo,
     internacaoId: l.internacaoId, pac: l.pac, adm: l.adm, procedencia: l.procedencia || '', hd: l.hd || '',
     enfermeiro: gf('v-enf').trim().toUpperCase(), alergia, isolamento,
     nsp, disp,
-    iras: { respostas, bundles },
-    notif: { eventos, notificado: eventos.length ? gRadio('v-notificado') : '', obs: gf('v-notif-obs').trim() },
+    notif: { itens: JSON.parse(JSON.stringify(NOTIFS)) },
     obs: gf('v-obs').trim(),
-    scores: { nsp: sc, bundlesAvaliados: avaliados.length, bundlesAderentes: avaliados.filter(x => x.status === 'aderente').length },
-    parcial: faltando.length > 0, sorteado: sorteado(bedId),
+    scores: { nsp: sc },
+    parcial: faltando.length > 0,
     autor: usuarioEmail, autorNome: perfil ? perfil.nome : '',
     criadoEm: visitaExistente ? (visitaExistente.criadoEm || visitaExistente.salvoEm) : agoraISO(), salvoEm: agoraISO()
   };
@@ -1125,15 +1160,23 @@ async function salvarVisita() {
     // Atualiza o leito (alergia, isolamento e dispositivos acompanham o paciente),
     // exceto quando a visita é de uma data anterior à última já registrada.
     const ult = l.ultimaVisita && l.ultimaVisita.data;
-    if (!ult || dataRef >= ult) {
-      const novoLeito = { ...l, alergia, isolamento, disp, ultimaVisita: { data: dataRef, pctNSP: sc.pct, nc: sc.naoConformes } };
+    if (!ult || visitaData >= ult) {
+      const novoLeito = { ...l, alergia, isolamento, disp, ultimaVisita: { data: visitaData, pctNSP: sc.pct, nc: sc.naoConformes } };
       await Store.set('nsp_leitos', bedId, novoLeito);
       LEITOS[bedId] = novoLeito;
     }
     VISITAS = VISITAS.filter(v => v.id !== id).concat([doc]);
-    apsFetch({ action: 'nsp_visita', registro: linhaPlanilha(doc) }, true);
+    apsEnfileirar({ action: 'nsp_visita', registro: linhaPlanilha(doc) });
     visitaSuja = false;
-    toast(r === 'pendente' ? 'Salvo no aparelho – sincroniza quando a conexão voltar' : '✓ Busca ativa salva');
+    let msgNotif = '';
+    if (doc.notif.itens.some(n => !n.enviada)) {
+      showLoading('Enviando notificações ao NSP...');
+      const rn = await enviarNotifsPendentes(doc);
+      VISITAS = VISITAS.filter(v => v.id !== id).concat([doc]);
+      if (rn.enviadas) msgNotif += ` · ${rn.enviadas} notificação(ões) enviada(s) ao NSP`;
+      if (rn.pendentes) msgNotif += ` · ${rn.pendentes} notificação(ões) pendente(s)` + (!CFG.APPS_SCRIPT_URL || modoLocal ? ' (Apps Script não configurado)' : !navigator.onLine ? ' (sem internet: vão sozinhas quando a conexão voltar)' : ' (falha no envio; nova tentativa automática)');
+    }
+    toast((r === 'pendente' ? 'Salvo no aparelho – sincroniza quando a conexão voltar' : '✓ Busca ativa salva') + msgNotif, /pendente/.test(msgNotif));
     preencherDatalistEnfermeiros();
     mostrarTela('t-painel');
     renderPainel();
@@ -1143,7 +1186,7 @@ async function salvarVisita() {
 
 // Linha "achatada" para planilha (Apps Script) e CSV
 function linhaPlanilha(v) {
-  const d = v.disp || {}, rs = (v.iras && v.iras.respostas) || {}, bs = (v.iras && v.iras.bundles) || {};
+  const d = v.disp || {};
   const s = (v.scores && v.scores.nsp) || {};
   const nomeSetor = SETOR[v.setor] ? SETOR[v.setor].nome : v.setor;
   const L = {
@@ -1153,20 +1196,18 @@ function linhaPlanilha(v) {
   };
   CFG.NSP_ITENS.forEach(it => { L['nsp_' + it.id] = ({ C: 'Conforme', NC: 'Não conforme', NA: 'N/A' })[v.nsp && v.nsp[it.id]] || ''; });
   Object.assign(L, {
-    nsp_conformes: s.conformes ?? '', nsp_nao_conformes: s.naoConformes ?? '', nsp_conformidade_pct: s.pct ?? '',
-    eliminacao: d.elim || '', svd_instalacao: fmtD(d.svdData), svd_dias: diasDesde(d.svdData, v.data) || '',
+    nsp_conformes: nv(s.conformes), nsp_nao_conformes: nv(s.naoConformes), nsp_conformidade_pct: nv(s.pct),
+    eliminacao: d.elim || '', svd_instalacao: fmtD(d.svdData), svd_dias: diasDesde(d.svdData, v.data) || '', svd_checklist: d.svdCk || '',
     cvc: d.cvc === true ? 'Sim' : d.cvc === false ? 'Não' : '', cvc_tipo: d.cvcTipo || '', cvc_instalacao: fmtD(d.cvcData), cvc_dias: diasDesde(d.cvcData, v.data) || '',
+    cvc_checklist: d.cvcCk || '', cvc_curativo: fmtD(d.cvcCurativo),
     avp: d.avp === true ? 'Sim' : d.avp === false ? 'Não' : '', avp_puncao: fmtD(d.avpData), avp_dias: diasDesde(d.avpData, v.data) || '',
     o2_vm: d.o2 || '', via_aerea_instalacao: fmtD(d.vaData), via_aerea_dias: diasDesde(d.vaData, v.data) || '', filtro_data: fmtD(d.filtroData)
   });
-  CFG.BUNDLES.forEach(b => {
-    L['bundle_' + b.id] = bs[b.id] ? ({ aderente: 'Aderente', nao_aderente: 'Não aderente', incompleto: 'Incompleto', na: 'N/A' })[bs[b.id].status] : '';
-    b.itens.forEach(it => { L[it.id] = rs[it.id] ? rs[it.id].toUpperCase() : ''; });
-  });
   Object.assign(L, {
-    eventos: ((v.notif && v.notif.eventos) || []).join(' | '), notificado_nsp: (v.notif && v.notif.notificado) || '',
-    notificacao_obs: (v.notif && v.notif.obs) || '', observacoes: v.obs || '',
-    sorteado_amostra: v.sorteado ? 'Sim' : 'Não', visita_parcial: v.parcial ? 'Sim' : 'Não',
+    notificacoes_qtd: ((v.notif && v.notif.itens) || []).length,
+    notificacoes: ((v.notif && v.notif.itens) || []).map(n => n.categoria + (n.categoria === 'Outros' && n.outros ? ' (' + n.outros + ')' : '')).join(' | '),
+    observacoes: v.obs || '',
+    semana: 'Semana de ' + fmtD(semanaDe(v.data).ini), visita_parcial: v.parcial ? 'Sim' : 'Não',
     visitador: v.autorNome || v.autor, salvo_em: fmtDH(v.salvoEm)
   });
   return L;
@@ -1216,6 +1257,7 @@ async function lerCensoArquivo(file) {
 }
 
 async function lerCensoDrive() {
+  if (!navigator.onLine) { toast('Sem internet. Use o arquivo .xlsx ou tente quando a conexão voltar.', true); return; }
   showLoading('Buscando o censo no Drive...');
   try {
     const r = await apsFetch({ action: 'nsp_censo' });
@@ -1476,9 +1518,9 @@ async function renderIndicadores() {
   const setor = gf('ind-setor') || 'todos';
   const cont = document.getElementById('ind-conteudo');
   showLoading('Calculando indicadores...');
-  let vis = [], amostras = [];
+  let vis = [];
   try {
-    [vis, amostras] = await Promise.all([Store.range('nsp_visitas', 'data', de, ate), Store.range('nsp_amostras', 'data', de, ate)]);
+    vis = await Store.range('nsp_visitas', 'data', de, ate);
   } catch (e) { hideLoading(); toast('Erro: ' + msgErro(e), true); return; }
   hideLoading();
   if (setor !== 'todos') vis = vis.filter(v => v.setor === setor);
@@ -1490,8 +1532,10 @@ async function renderIndicadores() {
   const n = vis.length;
   const pacientes = new Set(vis.map(v => v.internacaoId)).size;
   const dias = new Set(vis.map(v => v.data)).size;
-  const sorteadosTot = amostras.reduce((s, a) => s + (a.leitos || []).filter(id => setor === 'todos' || (BED[id] && BED[id].setorId === setor)).length, 0);
-  const sorteadosVis = vis.filter(v => v.sorteado).length;
+  const semanas = {};
+  vis.forEach(v => { const w = semanaDe(v.data).ini; (semanas[w] = semanas[w] || new Set()).add(v.internacaoId); });
+  const nSem = Object.keys(semanas).length;
+  const mediaSem = nSem ? (Object.values(semanas).reduce((t, x) => t + x.size, 0) / nSem).toFixed(1).replace('.', ',') : '–';
 
   // NSP global e por item
   let C = 0, NC = 0, vis100 = 0, visAval = 0;
@@ -1507,50 +1551,28 @@ async function renderIndicadores() {
     if (c + nc) { visAval++; if (!nc) vis100++; }
   });
 
-  // Bundles
-  const porBundle = {}, porItemB = {};
-  CFG.BUNDLES.forEach(b => { porBundle[b.id] = { a: 0, n: 0 }; b.itens.forEach(it => { if (it.criterio !== 'info') porItemB[it.id] = { a: 0, na: 0, b }; }); });
-  let BA = 0, BN = 0;
-  vis.forEach(v => {
-    const bs = (v.iras && v.iras.bundles) || {}, rs = (v.iras && v.iras.respostas) || {};
-    Object.entries(bs).forEach(([id, av]) => {
-      if (!porBundle[id] || (av.status !== 'aderente' && av.status !== 'nao_aderente')) return;
-      porBundle[id].n++; BN++;
-      if (av.status === 'aderente') { porBundle[id].a++; BA++; }
-    });
-    Object.entries(rs).forEach(([id, r]) => {
-      const pi = porItemB[id]; if (!pi) return;
-      const it = pi.b.itens.find(x => x.id === id);
-      const av = avaliarItemBundle(it, r);
-      if (av === 'aderente') pi.a++; else if (av === 'nao_aderente') pi.na++;
-    });
-  });
-
   // Dispositivos e eventos
   const dispCont = { SVD: 0, CVC: 0, AVP: 0, 'TOT/TQT': 0 }, diasDisp = { SVD: [], CVC: [], AVP: [], 'TOT/TQT': [] };
+  const ck = { SVD: { s: 0, n: 0 }, CVC: { s: 0, n: 0 } };
   const eventos = {}; let comEvento = 0, notificados = 0;
   vis.forEach(v => {
     const d = v.disp || {};
     const add = (k, data) => { dispCont[k]++; const x = diasDesde(data, v.data); if (x) diasDisp[k].push(x); };
-    if (d.elim === 'SVD') add('SVD', d.svdData);
-    if (d.cvc) add('CVC', d.cvcData);
+    if (d.elim === 'SVD') { add('SVD', d.svdData); if (d.svdCk) { ck.SVD.n++; if (d.svdCk === 'Sim') ck.SVD.s++; } }
+    if (d.cvc) { add('CVC', d.cvcData); if (d.cvcCk) { ck.CVC.n++; if (d.cvcCk === 'Sim') ck.CVC.s++; } }
     if (d.avp) add('AVP', d.avpData);
     if (d.o2 === 'TOT' || d.o2 === 'TQT') add('TOT/TQT', d.vaData);
-    const ev = (v.notif && v.notif.eventos) || [];
-    if (ev.length) { comEvento++; if (v.notif.notificado === 'Sim') notificados++; }
-    ev.forEach(e => { eventos[e] = (eventos[e] || 0) + 1; });
+    const its = (v.notif && v.notif.itens) || [];
+    its.forEach(nt => { comEvento++; if (nt.enviada) notificados++; eventos[nt.categoria] = (eventos[nt.categoria] || 0) + 1; });
   });
   const media = arr => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1).replace('.', ',') : '–';
 
   // Por setor
   const porSetor = CFG.SETORES.map(s => {
     const vs = vis.filter(v => v.setor === s.id);
-    let c = 0, nc = 0, ba = 0, bn = 0;
-    vs.forEach(v => {
-      Object.values(v.nsp || {}).forEach(r => { if (r === 'C') c++; else if (r === 'NC') nc++; });
-      ba += (v.scores && v.scores.bundlesAderentes) || 0; bn += (v.scores && v.scores.bundlesAvaliados) || 0;
-    });
-    return { s, n: vs.length, c, nc, ba, bn };
+    let c = 0, nc = 0;
+    vs.forEach(v => { Object.values(v.nsp || {}).forEach(r => { if (r === 'C') c++; else if (r === 'NC') nc++; }); });
+    return { s, n: vs.length, c, nc };
   }).filter(x => x.n);
 
   const linhasNSP = CFG.NSP_ITENS.map(it => {
@@ -1560,50 +1582,32 @@ async function renderIndicadores() {
       <td class="${corPct(p.c, tot)}"><b>${pct(p.c, tot)}</b>${tot ? barra(p.c / tot) : ''}</td><td>${fmtIC(p.c, tot)}</td></tr>`;
   }).join('');
 
-  const linhasB = CFG.BUNDLES.map(b => {
-    const p = porBundle[b.id];
-    if (!p.n) return '';
-    return `<tr><td>${b.icone} ${esc(b.titulo)}</td><td>${p.n}</td><td>${p.a}</td><td class="${corPct(p.a, p.n)}"><b>${pct(p.a, p.n)}</b>${barra(p.a / p.n)}</td><td>${fmtIC(p.a, p.n)}</td></tr>`;
-  }).join('');
-
-  const falhas = Object.entries(porItemB).map(([id, p]) => ({ id, p, tot: p.a + p.na }))
-    .filter(x => x.p.na > 0).sort((a, b) => (b.p.na / b.tot) - (a.p.na / a.tot)).slice(0, 8);
-  const linhasFalhas = falhas.map(x => {
-    const it = x.p.b.itens.find(i => i.id === x.id);
-    return `<tr><td>${esc(it.texto)}<div class="hint">${esc(x.p.b.titulo)}</div></td><td>${x.p.na}/${x.tot}</td><td class="vermelho"><b>${pct(x.p.na, x.tot)}</b></td></tr>`;
-  }).join('');
-
   cont.innerHTML = `
-    <p class="hint">Período ${fmtD(de)} a ${fmtD(ate)}${setor !== 'todos' ? ' · ' + esc(SETOR[setor].nome) : ''}. Taxas estimadas pela amostra; IC 95% pelo método de Wilson.</p>
+    <p class="hint">Período ${fmtD(de)} a ${fmtD(ate)}${setor !== 'todos' ? ' · ' + esc(SETOR[setor].nome) : ''}. IC 95% pelo método de Wilson.</p>
     <div class="ind-grid">
       ${cardInd('Buscas ativas', n, `${pacientes} pacientes · ${dias} dia(s)`)}
-      ${cardInd('Cumprimento da amostra', sorteadosTot ? pct(sorteadosVis, sorteadosTot) : '–', sorteadosTot ? `${sorteadosVis} de ${sorteadosTot} leitos sorteados visitados` : 'nenhuma amostra sorteada no período', corPct(sorteadosVis, sorteadosTot))}
+      ${cardInd('Semanas com busca ativa', nSem, `média de ${mediaSem} pacientes visitados por semana`)}
       ${cardInd('Conformidade NSP (itens)', pct(C, C + NC), `${C}/${C + NC} · IC95% ${fmtIC(C, C + NC)}`, corPct(C, C + NC))}
       ${cardInd('Visitas 100% conformes', pct(vis100, visAval), `${vis100} de ${visAval} visitas`, corPct(vis100, visAval))}
-      ${cardInd('Adesão aos bundles', pct(BA, BN), BN ? `${BA}/${BN} · IC95% ${fmtIC(BA, BN)}` : 'nenhum bundle avaliado', corPct(BA, BN))}
-      ${cardInd('Eventos identificados', comEvento, comEvento ? `${notificados} já notificados ao NSP (${pct(notificados, comEvento)})` : 'nenhum evento', comEvento && notificados < comEvento ? 'laranja' : '')}
+      ${cardInd('Check-list de inserção (SVD/CVC)', pct(ck.SVD.s + ck.CVC.s, ck.SVD.n + ck.CVC.n), ck.SVD.n + ck.CVC.n ? `${ck.SVD.s + ck.CVC.s} de ${ck.SVD.n + ck.CVC.n} dispositivos com check-list` : 'nenhum SVD/CVC avaliado', corPct(ck.SVD.s + ck.CVC.s, ck.SVD.n + ck.CVC.n))}
+      ${cardInd('Notificações geradas', comEvento, comEvento ? `${notificados} enviadas à planilha do NSP (${pct(notificados, comEvento)})` : 'nenhuma notificação', comEvento && notificados < comEvento ? 'laranja' : '')}
     </div>
 
     <div class="ind-grupo"><div class="ind-grupo-t">🛡 Segurança do paciente – conformidade por item</div>
       <div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Item</th><th>Avaliados</th><th>Conformes</th><th>%</th><th>IC 95%</th></tr></thead><tbody>${linhasNSP}</tbody></table></div></div>
 
-    <div class="ind-grupo"><div class="ind-grupo-t">🧫 CCIH – adesão aos bundles (tudo ou nada)</div>
-      ${linhasB ? `<div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Bundle</th><th>Avaliados</th><th>Aderentes</th><th>%</th><th>IC 95%</th></tr></thead><tbody>${linhasB}</tbody></table></div>` : '<div class="ind-vazio">Nenhum bundle avaliado no período.</div>'}
-      ${linhasFalhas ? `<div class="ind-subt">Itens com mais falhas</div><div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Item</th><th>Falhas</th><th>%</th></tr></thead><tbody>${linhasFalhas}</tbody></table></div>` : ''}
-    </div>
-
     <div class="ind-grupo"><div class="ind-grupo-t">🩺 Dispositivos nas buscas ativas</div>
-      <div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Dispositivo</th><th>Visitas com o dispositivo</th><th>% das visitas</th><th>Média de dias na visita</th></tr></thead><tbody>
-      ${Object.keys(dispCont).map(k => `<tr><td>${k}</td><td>${dispCont[k]}</td><td>${pct(dispCont[k], n)}</td><td>${media(diasDisp[k])}</td></tr>`).join('')}
+      <div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Dispositivo</th><th>Visitas com o dispositivo</th><th>% das visitas</th><th>Média de dias na visita</th><th>Com check-list de inserção</th></tr></thead><tbody>
+      ${Object.keys(dispCont).map(k => `<tr><td>${k}</td><td>${dispCont[k]}</td><td>${pct(dispCont[k], n)}</td><td>${media(diasDisp[k])}</td><td${ck[k] ? ` class="${corPct(ck[k].s, ck[k].n)}"` : ''}>${ck[k] ? (ck[k].n ? `${pct(ck[k].s, ck[k].n)} (${ck[k].s}/${ck[k].n})` : '–') : ''}</td></tr>`).join('')}
       </tbody></table></div></div>
 
-    ${Object.keys(eventos).length ? `<div class="ind-grupo"><div class="ind-grupo-t">⚠ Eventos identificados</div><div class="ind-bar-wrap">
+    ${Object.keys(eventos).length ? `<div class="ind-grupo"><div class="ind-grupo-t">⚠ Notificações por categoria</div><div class="ind-bar-wrap">
       ${Object.entries(eventos).sort((a, b) => b[1] - a[1]).map(([e, q]) => `<div class="ind-bar"><span class="ind-bar-l">${esc(e)}</span>${barra(q / comEvento)}<span class="ind-bar-n">${q}</span></div>`).join('')}
     </div></div>` : ''}
 
     ${setor === 'todos' && porSetor.length ? `<div class="ind-grupo"><div class="ind-grupo-t">🏥 Por setor</div>
-      <div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Setor</th><th>Buscas</th><th>Conformidade NSP</th><th>Adesão bundles</th></tr></thead><tbody>
-      ${porSetor.map(x => `<tr><td>${esc(x.s.nome)}</td><td>${x.n}</td><td class="${corPct(x.c, x.c + x.nc)}">${pct(x.c, x.c + x.nc)}</td><td class="${corPct(x.ba, x.bn)}">${x.bn ? pct(x.ba, x.bn) : '–'}</td></tr>`).join('')}
+      <div class="tab-wrap"><table class="tab-simples"><thead><tr><th>Setor</th><th>Buscas</th><th>Conformidade NSP</th></tr></thead><tbody>
+      ${porSetor.map(x => `<tr><td>${esc(x.s.nome)}</td><td>${x.n}</td><td class="${corPct(x.c, x.c + x.nc)}">${pct(x.c, x.c + x.nc)}</td></tr>`).join('')}
       </tbody></table></div></div>` : ''}`;
 }
 
@@ -1611,7 +1615,7 @@ function exportarCSV() {
   if (!IND || !IND.vis.length) { toast('Atualize os indicadores com um período que tenha buscas ativas.', true); return; }
   const linhas = IND.vis.map(linhaPlanilha);
   const cols = Object.keys(linhas[0]);
-  const cel = v => { const s = String(v ?? ''); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const cel = v => { const s = String(nv(v)); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const csv = '﻿' + [cols.join(';'), ...linhas.map(l => cols.map(c => cel(l[c])).join(';'))].join('\r\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -1667,6 +1671,7 @@ async function aoClicarUsuario(ev) {
 }
 
 async function adicionarUsuario() {
+  if (!navigator.onLine) { document.getElementById('u-err').textContent = 'Cadastrar usuário precisa de internet.'; return; }
   const nome = gf('u-nome').trim().toUpperCase(), email = gf('u-email').trim().toLowerCase();
   const funcao = gf('u-funcao'), role = gf('u-role'), senha = gf('u-senha').trim();
   const errEl = document.getElementById('u-err'), btn = document.getElementById('btn-add-user');
@@ -1712,14 +1717,21 @@ function ligarEventos() {
     setorAtivo = b.dataset.setor; renderPainel();
   });
   document.getElementById('v-nsp-itens').addEventListener('click', aoClicarResposta);
-  document.getElementById('v-bundles').addEventListener('click', aoClicarResposta);
-  document.getElementById('v-eventos').addEventListener('change', () => { visitaSuja = true; atualizarNotificado(); });
+  const vn = document.getElementById('v-notifs');
+  vn.addEventListener('input', aoEditarNotif);
+  vn.addEventListener('change', aoEditarNotif);
+  vn.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-rm]'); if (!b) return;
+    if (confirm('Remover esta notificação?')) { NOTIFS.splice(+b.dataset.rm, 1); visitaSuja = true; renderNotifs(); }
+  });
+  document.getElementById('v-nsp-itens').addEventListener('click', ev => {
+    const b = ev.target.closest('[data-notificar]'); if (!b) return;
+    const it = CFG.NSP_ITENS.find(x => x.id === b.dataset.notificar);
+    addNotif(it.notif || '', `Não conformidade identificada na busca ativa: ${it.texto}.`);
+  });
   document.getElementById('t-visita').addEventListener('input', () => { visitaSuja = true; });
   document.getElementById('usuarios-lista').addEventListener('click', aoClicarUsuario);
-  document.getElementById('amostra-corpo').addEventListener('click', ev => {
-    const b = ev.target.closest('.amostra-item'); if (!b) return;
-    fecharModal('modal-amostra'); abrirVisita(b.dataset.bed);
-  });
+
   // Maiúsculas ao sair do campo (preserva o autocompletar do teclado no celular)
   document.addEventListener('focusout', ev => {
     const el = ev.target;
@@ -1728,8 +1740,9 @@ function ligarEventos() {
   document.addEventListener('keydown', ev => {
     if (ev.key === 'Escape') document.querySelectorAll('.overlay.show').forEach(o => o.classList.remove('show'));
   });
-  window.addEventListener('online', atualizarStatusConexao);
+  window.addEventListener('online', aoFicarOnline);
   window.addEventListener('offline', atualizarStatusConexao);
+  setInterval(() => { if (navigator.onLine) { descarregarOutbox(); reenviarNotifsPendentes(); } }, 120000);
   window.addEventListener('beforeunload', ev => { if (visitaSuja) { ev.preventDefault(); ev.returnValue = ''; } });
 }
 
@@ -1743,6 +1756,11 @@ window.addEventListener('load', () => {
   document.getElementById('p-data').max = hojeISO();
   ligarEventos();
 
+  // Service worker: guarda as telas no aparelho para abrir sem internet
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('Service worker:', e));
+  }
+
   if (new URLSearchParams(location.search).get('local') === '1') { usarModoLocal(); return; }
   if (!firebaseConfigurado()) {
     document.getElementById('cfg-titulo').textContent = '⚙️ Firebase ainda não configurado';
@@ -1751,5 +1769,6 @@ window.addEventListener('load', () => {
   }
   if (!initFirebase()) { mostrarTela('t-config'); return; }
   mostrarTela('t-login');
+  if (!navigator.onLine) document.getElementById('login-err').textContent = 'Sem internet. Se você já entrou neste aparelho antes, aguarde: o app abre com os dados guardados.';
   auth.onAuthStateChanged(user => { aoMudarAuth(user).catch(e => { console.error(e); hideLoading(); toast('Erro no login: ' + msgErro(e), true); }); });
 });

@@ -7,16 +7,21 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>Busca Ativa NSP/CCIH – Hospital dos Pescadores</title>
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a3d6b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="icon-192.png">
 
 <!-- Firebase -->
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 
-<link rel="stylesheet" href="styles.css?v=20261029a">
+<link rel="stylesheet" href="styles.css?v=20261029c">
 </head>
 <body>
+<div id="barra-offline" class="barra-offline" style="display:none;">📴 Sem internet – pode continuar; tudo é salvo no aparelho e enviado quando a conexão voltar.</div>
 
 <!-- ═════════════ LOGIN ═════════════ -->
 <div id="t-login" class="tela tela-centro">
@@ -83,7 +88,7 @@
   <div class="painel-corpo">
     <div class="painel-topo">
       <div class="fl painel-data">
-        <label for="p-data">Data da busca</label>
+        <label for="p-data">Data da visita</label>
         <input type="date" id="p-data" onchange="mudarDataRef(this.value)">
       </div>
       <div class="resumo-chips" id="resumo-chips"></div>
@@ -92,14 +97,12 @@
     <div class="setor-tabs" id="setor-tabs"></div>
 
     <div class="painel-filtros">
-      <label class="ci"><input type="checkbox" id="f-so-sorteados" onchange="soSorteados=this.checked;renderPainel()"> Só leitos sorteados</label>
-      <label class="ci"><input type="checkbox" id="f-so-pendentes" onchange="soPendentes=this.checked;renderPainel()"> Só pendentes de visita</label>
+      <label class="ci"><input type="checkbox" id="f-mostrar-visitados" onchange="mostrarVisitados=this.checked;renderPainel()"> Mostrar também os já visitados nesta semana</label>
     </div>
 
     <div id="painel-grid"></div>
 
     <div class="btn-row painel-acoes">
-      <button class="btn btn-sm btn-amostra" onclick="sortearAmostra()">🎲 Sortear amostra do dia</button>
       <button class="btn btn-sm btn-censo" onclick="abrirImportarCenso()">📥 Importar censo</button>
       <button class="btn btn-sm btn-sec" onclick="irIndicadores()">📈 Indicadores</button>
       <button class="btn btn-sm btn-nsp" onclick="abrirFormularioNSP()">🛡 Notificação NSP</button>
@@ -116,7 +119,6 @@
   <div class="app-header">
     <div><h2 id="v-titulo">Busca ativa</h2><small id="v-sub"></small></div>
     <div class="header-right">
-      <span class="badge badge-sorteado" id="v-badge-sorteado" style="display:none;">🎲 AMOSTRA</span>
       <span class="badge-user" onclick="voltarPainel()">← Leitos</span>
     </div>
   </div>
@@ -161,7 +163,7 @@
 
     <!-- DISPOSITIVOS (colunas do modelo: SVD/ELIM · CVC/AVP · VM/FILTRO/O2) -->
     <div class="secao">
-      <div class="secao-t">🩺 Dispositivos</div>
+      <div class="secao-t">🩺 Dispositivos (CCIH)</div>
       <div class="secao-c">
         <div class="disp-blk">
           <div class="disp-t">SVD / Eliminação urinária</div>
@@ -174,6 +176,9 @@
           </div>
           <div class="disp-datas" id="wrap-svd" style="display:none;">
             <div class="fl"><label for="v-svd-data">Instalação da SVD</label><input type="date" id="v-svd-data" onchange="atualizarDias()"><span class="dias-tag" id="d-svd"></span></div>
+            <div class="linha-pergunta"><span class="sub-t">Check-list de inserção</span>
+              <div class="rg"><label class="ri"><input type="radio" name="v-svd-ck" value="Sim"> Sim</label><label class="ri"><input type="radio" name="v-svd-ck" value="Não"> Não</label></div>
+            </div>
           </div>
         </div>
 
@@ -188,6 +193,10 @@
               <select id="v-cvc-tipo"><option value="">–</option><option>CVC</option><option>CDL (hemodiálise)</option><option>PICC</option></select>
             </div>
             <div class="fl"><label for="v-cvc-data">Instalação</label><input type="date" id="v-cvc-data" onchange="atualizarDias()"><span class="dias-tag" id="d-cvc"></span></div>
+            <div class="linha-pergunta"><span class="sub-t">Check-list de inserção</span>
+              <div class="rg"><label class="ri"><input type="radio" name="v-cvc-ck" value="Sim"> Sim</label><label class="ri"><input type="radio" name="v-cvc-ck" value="Não"> Não</label></div>
+            </div>
+            <div class="fl"><label for="v-cvc-curativo">Curativo (data)</label><input type="date" id="v-cvc-curativo" onchange="atualizarDias()"><span class="dias-tag" id="d-cvc-curativo"></span></div>
           </div>
         </div>
 
@@ -220,29 +229,13 @@
       </div>
     </div>
 
-    <!-- CCIH -->
-    <div class="secao">
-      <div class="secao-t">🧫 Check-list CCIH (bundles)</div>
-      <div class="secao-c">
-        <div id="v-bundles"></div>
-      </div>
-    </div>
-
     <!-- NOTIFICAÇÕES -->
     <div class="secao">
-      <div class="secao-t">⚠ Notificações</div>
+      <div class="secao-t">⚠ Notificações ao NSP</div>
       <div class="secao-c">
-        <p class="hint">Marque os eventos/incidentes identificados nesta visita.</p>
-        <div class="cg" id="v-eventos"></div>
-        <div class="linha-pergunta" id="wrap-notificado" style="display:none;">
-          <span class="sub-t">Já notificado ao NSP?</span>
-          <div class="rg">
-            <label class="ri"><input type="radio" name="v-notificado" value="Sim"> Sim</label>
-            <label class="ri"><input type="radio" name="v-notificado" value="Não"> Não</label>
-          </div>
-          <button type="button" class="btn-mini btn-mini-nsp" onclick="abrirFormularioNSP()">🛡 Abrir formulário do NSP</button>
-        </div>
-        <textarea id="v-notif-obs" style="min-height:60px;" placeholder="Descrição breve (sem dados clínicos desnecessários)"></textarea>
+        <p class="hint">Cada notificação vira uma linha na planilha de notificações do NSP quando a busca ativa é salva. Depois de enviada, ela fica travada aqui.</p>
+        <div id="v-notifs"></div>
+        <div><button type="button" class="btn btn-sm btn-nsp" onclick="addNotif()">+ Adicionar notificação</button></div>
       </div>
     </div>
 
@@ -413,18 +406,10 @@
   </div>
 </div>
 
-<!-- ═════════════ MODAL AMOSTRA ═════════════ -->
-<div class="overlay" id="modal-amostra">
-  <div class="modal modal-largo">
-    <div class="modal-header modal-header-laranja"><h3>🎲 Amostra do dia</h3><button class="modal-close" onclick="fecharModal('modal-amostra')" aria-label="Fechar">✕</button></div>
-    <div class="modal-body" id="amostra-corpo"></div>
-  </div>
-</div>
-
 <div class="toast" id="toast"></div>
 <div class="loading-overlay" id="loading-overlay"><div class="spinner"></div><div class="loading-msg" id="loading-msg">Carregando...</div></div>
 
-<script src="config.js?v=20261029a"></script>
-<script src="app.js?v=20261029a"></script>
+<script defer src="config.js?v=20261029c"></script>
+<script defer src="app.js?v=20261029c"></script>
 </body>
 </html>

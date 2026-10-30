@@ -6,6 +6,11 @@
  *  - nsp_visita    → grava/atualiza cada busca ativa na aba BUSCA_ATIVA (uma linha por paciente/dia)
  *  - nsp_movimento → registra admissões, saídas, transferências e bloqueios na aba MOVIMENTOS
  *  - nsp_censo     → lê a aba CENSO da planilha do NIR e devolve ao app (importação direta)
+ *  - nsp_notificacao → grava cada notificação como UMA LINHA na planilha de respostas do
+ *                      formulário "Notificação - Núcleo de Segurança do Paciente"
+ *
+ * IMPORTANTE: a conta que publicar este script precisa ter acesso de EDIÇÃO à
+ * planilha de notificações (e às demais planilhas configuradas).
  *
  * Segurança: toda chamada traz o ID Token do Firebase do usuário logado, conferido
  * aqui no Google antes de qualquer leitura ou gravação.
@@ -16,6 +21,7 @@
  *  3. Implantar → Nova implantação → Tipo "App da Web"
  *     Executar como: Eu · Quem pode acessar: Qualquer pessoa.
  *  4. Copie a URL /exec e cole em APPS_SCRIPT_URL no config.js do app.
+ *  Em Configurações do projeto (⚙️), deixe o fuso horário em America/Fortaleza.
  */
 
 const CFG = {
@@ -23,6 +29,9 @@ const CFG = {
   PLANILHA_DESTINO_ID: '',   // planilha onde ficam as buscas ativas (PREENCHER)
   CENSO_PLANILHA_ID: '',     // planilha do censo do NIR (PREENCHER)
   CENSO_ABA: 'CENSO',
+  // Planilha de respostas do formulário de notificação do NSP
+  NOTIF_PLANILHA_ID: '1XHJbj3Tm2CjHznSeBfdOAQtLQKTpeFMttV3bxEIQdR4',
+  NOTIF_ABA: '',             // vazio = acha sozinha a aba que começa com "Carimbo de data/hora"
   ABA_VISITAS: 'BUSCA_ATIVA',
   ABA_MOVIMENTOS: 'MOVIMENTOS',
   EMAILS_PERMITIDOS: []      // vazio = qualquer usuário com login no Firebase deste sistema
@@ -42,6 +51,7 @@ function doPost(e) {
       case 'nsp_visita':    return _json(_upsertVisita(req.registro, email));
       case 'nsp_movimento': return _json(_registrarMovimento(req.registro, email));
       case 'nsp_censo':     return _json(_lerCenso());
+      case 'nsp_notificacao': return _json(_gravarNotificacoes(req.itens || [], email));
       default:              return _json({ status: 'erro', msg: 'Ação desconhecida: ' + req.action });
     }
   } catch (err) {
@@ -97,6 +107,68 @@ function _registrarMovimento(reg, email) {
     aba.appendRow(cab.map(function (c) { return reg[c] !== undefined ? reg[c] : ''; }));
     return { status: 'ok' };
   } finally { lock.releaseLock(); }
+}
+
+// ── Notificações: uma linha por notificação, no formato do formulário do NSP ──
+// As colunas são localizadas pelo TEXTO do cabeçalho (não pela posição), então
+// a gravação continua certa mesmo se o formulário ganhar/perder perguntas.
+// Cada notificação tem um id; ids já gravados são ignorados (sem linha duplicada).
+function _gravarNotificacoes(itens, email) {
+  if (!itens.length) return { status: 'ok', gravados: [] };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const ss = SpreadsheetApp.openById(CFG.NOTIF_PLANILHA_ID);
+    const aba = CFG.NOTIF_ABA ? ss.getSheetByName(CFG.NOTIF_ABA) : ss.getSheets().filter(function (sh) {
+      return _norm(sh.getRange(1, 1).getDisplayValue()).indexOf('CARIMBO') === 0;
+    })[0];
+    if (!aba) return { status: 'erro', msg: 'Aba de respostas do formulário não encontrada na planilha de notificações.' };
+
+    const ncol = aba.getLastColumn();
+    const cab = aba.getRange(1, 1, 1, ncol).getDisplayValues()[0].map(_norm);
+    const col = function (prefixo) { for (var i = 0; i < cab.length; i++) if (cab[i].indexOf(prefixo) === 0) return i; return -1; };
+    const C = {
+      carimbo: col('CARIMBO'), categoria: col('NOTIFICACAO RELACIONADA'), outros: col('EM CASO DE RESPOSTA'),
+      setor: col('SETOR OU CATEGORIA'), data: col('DATA EM QUE OCORREU'), hora: col('HORARIO'),
+      descricao: col('DESCREVA O IN'), dano: col('HOUVE DANO'), danoDesc: col('SE HOUVE DANO'),
+      obs: col('OUTRAS OBSERVACOES'), comPaciente: col('EVENTO COM PACIENTE'), leito: col('INFORME O LEITO')
+    };
+    if (C.categoria < 0 || C.descricao < 0) return { status: 'erro', msg: 'Cabeçalho da planilha de notificações diferente do esperado.' };
+
+    const props = PropertiesService.getScriptProperties();
+    const gravados = [];
+    itens.forEach(function (n) {
+      if (!n || !n.id) return;
+      if (props.getProperty('notif_' + n.id)) { gravados.push(n.id); return; }   // já gravada antes
+      const linha = new Array(ncol).fill('');
+      const put = function (k, v) { if (C[k] >= 0) linha[C[k]] = v; };
+      put('carimbo', new Date());
+      put('categoria', n.categoria); put('outros', n.outros); put('setor', n.setor);
+      put('data', _data(n.data)); put('hora', _hora(n.hora));
+      put('descricao', n.descricao); put('dano', n.dano); put('danoDesc', n.danoDesc);
+      put('obs', n.obs); put('comPaciente', n.comPaciente); put('leito', n.leito);
+      const r = aba.getLastRow() + 1;
+      aba.getRange(r, 1, 1, ncol).setValues([linha]);
+      if (C.carimbo >= 0) aba.getRange(r, C.carimbo + 1).setNumberFormat('dd/MM/yyyy HH:mm:ss');
+      if (C.data >= 0) aba.getRange(r, C.data + 1).setNumberFormat('dd/MM/yyyy');
+      if (C.hora >= 0) aba.getRange(r, C.hora + 1).setNumberFormat('HH:mm:ss');
+      props.setProperty('notif_' + n.id, new Date().toISOString() + ' ' + email);
+      gravados.push(n.id);
+    });
+    return { status: 'ok', gravados: gravados };
+  } finally { lock.releaseLock(); }
+}
+
+function _data(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : '';
+}
+function _hora(hhmm) {
+  const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})/);
+  return m ? ('0' + m[1]).slice(-2) + ':' + m[2] + ':00' : '';   // a planilha converte em hora
+}
+function _norm(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
 }
 
 // ── Leitura do censo do NIR (valores exibidos, como na tela) ──────────────────
