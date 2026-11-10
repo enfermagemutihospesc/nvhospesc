@@ -18,7 +18,7 @@
 <script defer src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script defer src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 
-<link rel="stylesheet" href="styles.css?v=20261029c">
+<link rel="stylesheet" href="styles.css?v=20261109b">
 </head>
 <body>
 <div id="barra-offline" class="barra-offline" style="display:none;">📴 Sem internet – pode continuar; tudo é salvo no aparelho e enviado quando a conexão voltar.</div>
@@ -94,10 +94,15 @@
       <div class="resumo-chips" id="resumo-chips"></div>
     </div>
 
+    <div class="modo-toggle" id="modo-toggle" role="group" aria-label="Tipo de visita">
+      <button type="button" data-modo="nsp" aria-pressed="true"><b>🛡 Busca ativa NSP</b><small>1× por semana</small></button>
+      <button type="button" data-modo="ccih" aria-pressed="false"><b>🧫 Ronda CCIH</b><small>todos os dias</small></button>
+    </div>
+
     <div class="setor-tabs" id="setor-tabs"></div>
 
     <div class="painel-filtros">
-      <label class="ci"><input type="checkbox" id="f-mostrar-visitados" onchange="mostrarVisitados=this.checked;renderPainel()"> Mostrar também os já visitados nesta semana</label>
+      <label class="ci"><input type="checkbox" id="f-mostrar-visitados" onchange="mostrarVisitados=this.checked;renderPainel()"> <span id="lbl-mostrar">Mostrar também os já visitados nesta semana</span></label>
     </div>
 
     <div id="painel-grid"></div>
@@ -107,6 +112,7 @@
       <button class="btn btn-sm btn-sec" onclick="irIndicadores()">📈 Indicadores</button>
       <button class="btn btn-sm btn-nsp" onclick="abrirFormularioNSP()">🛡 Notificação NSP</button>
       <button class="btn btn-sm btn-sec so-admin" onclick="abrirUsuarios()">👥 Usuários</button>
+      <button class="btn btn-sm btn-sec" id="btn-exp-notif" style="display:none;" onclick="abrirExportNotif()">📤 Exportar notificações</button>
       <button class="btn btn-sm btn-sec so-nuvem" onclick="abrirTrocaSenha()">🔑 Trocar senha</button>
       <button class="btn btn-sm btn-sec" onclick="carregarPainel()">🔄 Atualizar</button>
     </div>
@@ -114,7 +120,7 @@
   </div>
 </div>
 
-<!-- ═════════════ VISITA (BUSCA ATIVA DO LEITO) ═════════════ -->
+<!-- ═════════════ FORMULÁRIO DO LEITO: BUSCA ATIVA NSP ou RONDA CCIH ═════════════ -->
 <div id="t-visita" class="tela">
   <div class="app-header">
     <div><h2 id="v-titulo">Busca ativa</h2><small id="v-sub"></small></div>
@@ -137,8 +143,8 @@
       </div>
     </div>
 
-    <!-- SEGURANÇA DO PACIENTE -->
-    <div class="secao">
+    <!-- SEGURANÇA DO PACIENTE (só na busca ativa NSP) -->
+    <div class="secao so-nsp">
       <div class="secao-t">🛡 Segurança do paciente (NSP)</div>
       <div class="secao-c">
         <div class="linha-pergunta">
@@ -148,23 +154,28 @@
             <label class="ri"><input type="radio" name="v-alergia" value="Não" onchange="onMudaContexto()"> Não</label>
           </div>
         </div>
-        <div class="linha-pergunta">
-          <span class="sub-t">Paciente em isolamento</span>
-          <div class="rg">
-            <label class="ri"><input type="radio" name="v-isol" value="Não" onchange="onMudaContexto()"> Não</label>
-            <label class="ri"><input type="radio" name="v-isol" value="Vigilância" onchange="onMudaContexto()"> Vigilância</label>
-            <label class="ri"><input type="radio" name="v-isol" value="Contato" onchange="onMudaContexto()"> Contato</label>
-            <label class="ri"><input type="radio" name="v-isol" value="Respiratório" onchange="onMudaContexto()"> Respiratório</label>
-          </div>
-        </div>
+        <div class="hint" id="v-isol-info"></div>
         <div id="v-nsp-itens"></div>
       </div>
     </div>
 
-    <!-- DISPOSITIVOS (colunas do modelo: SVD/ELIM · CVC/AVP · VM/FILTRO/O2) -->
-    <div class="secao">
-      <div class="secao-t">🩺 Dispositivos (CCIH)</div>
+    <!-- RONDA CCIH: isolamento e dispositivos (colunas do modelo: SVD/ELIM · CVC/AVP · VM/FILTRO/O2) -->
+    <div class="secao so-ccih">
+      <div class="secao-t">🧫 Ronda CCIH – isolamento e dispositivos</div>
       <div class="secao-c">
+        <div class="sem-alt" id="v-sem-alt" style="display:none;">
+          <div id="v-sem-alt-txt"></div>
+          <button type="button" class="btn btn-ok" onclick="salvarRonda(true)">✓ Sem alterações – salvar ronda</button>
+        </div>
+        <div class="disp-blk">
+          <div class="disp-t">Paciente em isolamento / precaução</div>
+          <div class="rg">
+            <label class="ri"><input type="radio" name="v-isol" value="Não" onchange="onMudaDisp()"> Não</label>
+            <label class="ri"><input type="radio" name="v-isol" value="Vigilância" onchange="onMudaDisp()"> Vigilância</label>
+            <label class="ri"><input type="radio" name="v-isol" value="Contato" onchange="onMudaDisp()"> Contato</label>
+            <label class="ri"><input type="radio" name="v-isol" value="Respiratório" onchange="onMudaDisp()"> Respiratório</label>
+          </div>
+        </div>
         <div class="disp-blk">
           <div class="disp-t">SVD / Eliminação urinária</div>
           <div class="rg">
@@ -240,7 +251,7 @@
     </div>
 
     <div class="secao">
-      <div class="secao-t">Observações da visita</div>
+      <div class="secao-t">Observações</div>
       <div class="secao-c"><textarea id="v-obs" style="min-height:60px;" placeholder="Orientações dadas à equipe, pendências..."></textarea></div>
     </div>
 
@@ -261,6 +272,10 @@
     <div class="header-right"><span class="badge-user" onclick="irPainel()">← Leitos</span></div>
   </div>
   <div class="painel-corpo">
+    <div class="ind-tabs" id="ind-tabs">
+      <button type="button" class="ind-cat-btn ativa" data-t="nsp">🛡 Busca ativa NSP</button>
+      <button type="button" class="ind-cat-btn" data-t="ccih">🧫 Ronda CCIH</button>
+    </div>
     <div class="ind-filtros">
       <div class="ind-filtro-g">
         <label for="ind-periodo">Período</label>
@@ -398,6 +413,23 @@
   </div>
 </div>
 
+<!-- ═════════════ MODAL EXPORTAR NOTIFICAÇÕES (admin) ═════════════ -->
+<div class="overlay" id="modal-notif-exp">
+  <div class="modal modal-largo">
+    <div class="modal-header modal-header-verm"><h3>📤 Exportar notificações para a planilha do NSP</h3><button class="modal-close" onclick="fecharModal('modal-notif-exp')" aria-label="Fechar">✕</button></div>
+    <div class="modal-body">
+      <p class="hint">Use enquanto o envio automático (Apps Script) não estiver funcionando. As linhas saem na mesma ordem das colunas da planilha de respostas do formulário.</p>
+      <div class="xn-filtros">
+        <div class="fl"><label for="xn-de">De</label><input type="date" id="xn-de"></div>
+        <div class="fl"><label for="xn-ate">Até</label><input type="date" id="xn-ate"></div>
+        <label class="ci"><input type="checkbox" id="xn-pend" checked> Só as ainda não lançadas</label>
+        <button class="btn btn-sm btn-pri" onclick="buscarNotifsExport()">🔍 Buscar</button>
+      </div>
+      <div id="xn-resultado"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ═════════════ MODAL IMPORTAR CENSO ═════════════ -->
 <div class="overlay" id="modal-censo">
   <div class="modal modal-largo">
@@ -409,7 +441,7 @@
 <div class="toast" id="toast"></div>
 <div class="loading-overlay" id="loading-overlay"><div class="spinner"></div><div class="loading-msg" id="loading-msg">Carregando...</div></div>
 
-<script defer src="config.js?v=20261029c"></script>
-<script defer src="app.js?v=20261029c"></script>
+<script defer src="config.js?v=20261109b"></script>
+<script defer src="app.js?v=20261109b"></script>
 </body>
 </html>

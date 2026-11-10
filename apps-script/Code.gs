@@ -3,7 +3,8 @@
  * Backend Google Apps Script (Planilhas no Drive)
  *
  * O que faz:
- *  - nsp_visita    → grava/atualiza cada busca ativa na aba BUSCA_ATIVA (uma linha por paciente/dia)
+ *  - nsp_visita    → grava/atualiza cada busca ativa NSP na aba BUSCA_ATIVA (uma linha por paciente/semana)
+ *  - nsp_ronda     → grava/atualiza cada ronda CCIH na aba RONDA_CCIH (uma linha por paciente/dia)
  *  - nsp_movimento → registra admissões, saídas, transferências e bloqueios na aba MOVIMENTOS
  *  - nsp_censo     → lê a aba CENSO da planilha do NIR e devolve ao app (importação direta)
  *  - nsp_notificacao → grava cada notificação como UMA LINHA na planilha de respostas do
@@ -33,6 +34,7 @@ const CFG = {
   NOTIF_PLANILHA_ID: '1XHJbj3Tm2CjHznSeBfdOAQtLQKTpeFMttV3bxEIQdR4',
   NOTIF_ABA: '',             // vazio = acha sozinha a aba que começa com "Carimbo de data/hora"
   ABA_VISITAS: 'BUSCA_ATIVA',
+  ABA_RONDAS: 'RONDA_CCIH',
   ABA_MOVIMENTOS: 'MOVIMENTOS',
   EMAILS_PERMITIDOS: []      // vazio = qualquer usuário com login no Firebase deste sistema
 };
@@ -48,7 +50,8 @@ function doPost(e) {
     if (!email) return _json({ status: 'erro', msg: 'Sessão inválida. Entre novamente no app.' });
 
     switch (req.action) {
-      case 'nsp_visita':    return _json(_upsertVisita(req.registro, email));
+      case 'nsp_visita':    return _json(_upsertVisita(req.registro, email, CFG.ABA_VISITAS));
+      case 'nsp_ronda':     return _json(_upsertVisita(req.registro, email, CFG.ABA_RONDAS));
       case 'nsp_movimento': return _json(_registrarMovimento(req.registro, email));
       case 'nsp_censo':     return _json(_lerCenso());
       case 'nsp_notificacao': return _json(_gravarNotificacoes(req.itens || [], email));
@@ -80,13 +83,13 @@ function _verificarToken(idToken) {
 }
 
 // ── Gravação: uma linha por visita (id = data_internação); atualiza se já existir ──
-function _upsertVisita(reg, email) {
+function _upsertVisita(reg, email, nomeAba) {
   if (!reg || !reg.id) return { status: 'erro', msg: 'Registro sem id.' };
   if (!CFG.PLANILHA_DESTINO_ID) return { status: 'erro', msg: 'PLANILHA_DESTINO_ID não configurado no Apps Script.' };
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const aba = _aba(CFG.ABA_VISITAS);
+    const aba = _aba(nomeAba || CFG.ABA_VISITAS);
     const cab = _garantirColunas(aba, Object.keys(reg));
     const linha = cab.map(function (c) { return reg[c] !== undefined ? reg[c] : ''; });
     const achado = aba.getRange(1, 1, Math.max(aba.getLastRow(), 1), 1).createTextFinder(String(reg.id)).matchEntireCell(true).findNext();

@@ -55,20 +55,32 @@ A conta Google que publicar o Apps Script precisa ter **acesso de edição** à 
 |---|---|
 | `usuario__<e-mail>` | Perfil (nome, função, admin, ativo) |
 | `leito__<leito>` | Paciente atual: nome, admissão, procedência, HD, alergia, isolamento, dispositivos |
-| `visita__<data>_<internação>` | Uma busca ativa por paciente por dia |
+| `visita__<data>_<internação>` | Busca ativa NSP (uma por paciente por semana) |
+| `ronda__<data>_<internação>` | Ronda CCIH (uma por paciente por dia) |
+| `ocup__<data>` | Pacientes presentes no dia (base dos pacientes-dia) |
 | `mov__<data>_<id>` | Histórico de admissões, saídas, transferências e bloqueios (não pode ser apagado) |
 | `config__censo` | Último censo importado (só nome, admissão, procedência, HD, O₂ e isolamento) |
 
 Idade, sexo, data de nascimento, CNS, CPF e evolução clínica **não são guardados**.
 
-## Ciclo semanal de visitas
+## Rotinas: busca ativa NSP (semanal) e ronda CCIH (diária)
 
-Todos os pacientes internados recebem **uma busca ativa por semana** (segunda a domingo), divididos em 3 visitas da equipe (`VISITAS_POR_SEMANA` no `config.js`).
+O painel tem uma chave **🛡 Busca ativa NSP | 🧫 Ronda CCIH**. Cada modo mostra só os seus pendentes.
 
-- O painel mostra a semana atual: quantos pacientes já foram visitados, quantos faltam e a meta aproximada por visita (total de internados ÷ 3).
-- Quando a busca ativa de um paciente é salva, o leito fica marcado **✓ Visitado** e sai da lista; ficam disponíveis só os pendentes. Para ver todos, marque "Mostrar também os já visitados nesta semana".
-- Abrir um paciente já visitado na semana abre a mesma visita, para consulta ou correção, sem criar outra.
-- Paciente que muda de leito continua contando como visitado. Paciente admitido no meio da semana entra como pendente.
+| | Busca ativa NSP | Ronda CCIH |
+|---|---|---|
+| Frequência | 1 por paciente por semana (seg–dom), em 3 visitas (`VISITAS_POR_SEMANA`). **Sala Vermelha e Estabilização: diária** (`nspDiario: true` no grupo, em `config.js`) | Todos os pacientes, todos os dias (inclusive fim de semana) |
+| Conteúdo | Alergia, itens de segurança (inclui sinalização de isolamento), notificações | Isolamento/precaução, SVD, CVC (check-list, curativo), AVP, O₂/VM e filtro, notificações |
+| Some da lista | Depois de visitado na semana (nos grupos `nspDiario`, só no dia) | Depois da ronda do dia |
+| Planilha | Aba `BUSCA_ATIVA` | Aba `RONDA_CCIH` |
+
+- A ronda CCIH abre preenchida com a última ronda; se nada mudou, **"Sem alterações – salvar ronda"** grava em um toque.
+- O isolamento registrado na ronda CCIH aparece na busca ativa NSP, que confere a **sinalização** do isolamento.
+- O app guarda os **pacientes do dia** (`ocup__<data>`) ao abrir o painel, admitir, transferir e importar o censo. Com as rondas, calcula **pacientes-dia, dispositivos-dia e taxa de utilização** (aba CCIH dos indicadores), com aviso quando a cobertura da ronda é menor que 95%.
+
+## Exportar notificações (administrador)
+
+Enquanto o Apps Script não estiver rodando, o administrador usa **📤 Exportar notificações** no painel: escolhe o período, toca em **Copiar linhas** e cola na coluna A da primeira linha vazia da planilha de respostas do NSP (ou baixa o CSV). Depois toca em **Marcar como lançadas**: assim elas não são reenviadas quando o Apps Script começar a funcionar.
 
 ## Uso sem internet (offline)
 

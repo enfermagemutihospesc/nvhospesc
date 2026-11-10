@@ -161,6 +161,7 @@ textarea{width:100%;resize:vertical;min-height:80px;line-height:1.6;padding:8px 
 .setor-t{font-size:.95rem;font-weight:700;color:var(--azul);margin-top:.6rem;padding-bottom:4px;border-bottom:2px solid var(--azul-cl)}
 .grupo-t{font-size:.74rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.7rem 0 .4rem}
 .grupo-t span{font-weight:500;text-transform:none;letter-spacing:0;margin-left:6px}
+.grupo-t .grupo-diario{background:#fde8e8;color:#8b1a1a;border-radius:4px;padding:1px 5px;font-weight:700;font-size:.66rem;margin-left:4px}
 @media(min-width:760px){.tela-larga .leitos-grid{grid-template-columns:repeat(4,1fr)}}
 .leito-num{display:flex;justify-content:space-between;align-items:center}
 .leito-card.vago .leito-info{min-height:44px}
@@ -266,3 +267,24 @@ textarea{width:100%;resize:vertical;min-height:80px;line-height:1.6;padding:8px 
   .iras-radio-btn{padding:6px 12px;min-height:36px}
 }
 .toast{white-space:normal;max-width:92vw;width:max-content;text-align:center;line-height:1.35}
+
+/* NSP | CCIH */
+.modo-toggle{display:flex;gap:6px;background:var(--cinza);border:1px solid var(--borda);border-radius:12px;padding:4px}
+.modo-toggle button{flex:1;border:0;background:transparent;border-radius:9px;padding:7px 6px;cursor:pointer;font-family:var(--fonte);color:var(--muted);display:flex;flex-direction:column;align-items:center;line-height:1.25}
+.modo-toggle button b{font-size:.84rem}
+.modo-toggle button small{font-size:.66rem}
+.modo-toggle button.ativo{background:#fff;color:var(--azul);box-shadow:var(--sh-xs)}
+.modo-toggle button[data-modo="ccih"].ativo{color:#0d6b3a}
+#t-painel[data-modo="ccih"] .app-header{background:linear-gradient(135deg,#0d5230,#1a8a4c)}
+.leito-iras-btn.btn-ccih{background:#e8f6ee;color:#0d6b3a;border-color:rgba(13,107,58,.25)}
+.leito-iras-btn.btn-ccih.leito-iras-btn--preenchido{background:#1a6b3a;color:#fff}
+.lb-sutil{opacity:.55}
+#t-visita[data-tipo="nsp"] .so-ccih,#t-visita[data-tipo="ccih"] .so-nsp{display:none}
+#t-visita[data-tipo="ccih"] .app-header{background:linear-gradient(135deg,#0d5230,#1a8a4c)}
+.sem-alt{background:#eaf7ef;border:1.5px solid #a8dcc0;border-radius:9px;padding:9px 11px;display:flex;flex-direction:column;gap:8px;font-size:.8rem;color:#0d5230}
+.sem-alt .btn{align-self:flex-start}
+.ind-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.aviso-ind{background:var(--laranja-cl);border:1px solid #f3d48a;color:var(--laranja);border-radius:8px;padding:8px 11px;font-size:.76rem;margin:6px 0}
+.xn-filtros{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.xn-filtros .fl{flex:0 0 auto}
+.xn-passos{background:var(--azul-xl);border:1px solid var(--azul-cl);border-radius:8px;padding:8px 11px;font-size:.76rem;margin:8px 0;line-height:1.5}

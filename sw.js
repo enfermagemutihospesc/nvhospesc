@@ -5,7 +5,7 @@
 // dos arquivos do app.
 // Ao publicar uma versão nova, troque VERSAO para forçar a atualização.
 // ════════════════════════════════════════════════════════════════════════════
-const VERSAO = 'nsp-2026-10-29c';
+const VERSAO = 'nsp-2026-11-09b';
 const APP = ['./', 'index.html', 'styles.css', 'config.js', 'app.js', 'logo.png', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 const CDN = [
   'https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js',

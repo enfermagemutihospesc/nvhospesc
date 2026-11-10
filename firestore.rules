@@ -6,8 +6,9 @@ rules_version = '2';
 //
 // Coleção única: busca_ativa_nsp (igual a COLECAO do config.js).
 // O ID de cada documento leva o tipo como prefixo:
-//   usuario__<email>  leito__<id>  visita__<data>_<internação>
-//   amostra__<data>   mov__<id>    config__censo
+//   usuario__<email>  leito__<id>  visita__<data>_<internação> (busca ativa NSP)
+//   ronda__<data>_<internação> (ronda CCIH)  ocup__<data> (pacientes do dia)
+//   mov__<id>         config__censo
 // ════════════════════════════════════════════════════════════════════════════
 service cloud.firestore {
   match /databases/{database}/documents {

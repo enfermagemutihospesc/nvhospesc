@@ -51,9 +51,9 @@
     NSP_FORM_URL: 'https://docs.google.com/forms/d/e/1FAIpQLSfpuEkVu7xLfbX8aUYa1rG-Oo77w3ae9DDBFvSRxvAomWAYgQ/viewform',
 
     // ── CICLO DE VISITAS ─────────────────────────────────────────────────────
-    // Todos os pacientes internados recebem UMA busca ativa por semana
-    // (segunda a domingo), divididos entre os dias de visita da equipe.
-    // Depois de visitado na semana, o leito sai da lista de pendentes.
+    // Busca ativa NSP: UMA por paciente por semana (segunda a domingo),
+    // divididos entre os dias de visita da equipe.
+    // Ronda CCIH: TODOS os pacientes, TODOS os dias (inclusive fim de semana).
     VISITAS_POR_SEMANA: 3,
 
     // ── SETORES E LEITOS (espelho do censo do NIR; PS e Clínica Médica) ────────────────
@@ -61,13 +61,15 @@
     // "notif"      = como o leito é escrito na planilha de notificações do NSP
     //                (o app completa com o número: "PS S.V L" + "02" → "PS S.V L02").
     // "notifSetor" = opção do campo "Setor ou categoria envolvidos na falha".
+    // "nspDiario"  = true → busca ativa NSP TODOS OS DIAS nesse grupo (pacientes graves),
+    //                em vez de 1× por semana. A ronda CCIH já é diária em todos os leitos.
     SETORES: [
       { id: 'ps', nome: 'Pronto Socorro', sigla: 'PS', notifSetor: 'PS', grupos: [
-        { nome: 'Sala Vermelha',               censo: 'SALA VERMELHA', notif: 'PS S.V L',          leitos: L('ps_sv', 1, 3) },
+        { nome: 'Sala Vermelha',               censo: 'SALA VERMELHA', notif: 'PS S.V L',          leitos: L('ps_sv', 1, 3), nspDiario: true },
         { nome: 'Sala Amarela',                censo: 'SALA AMARELA',  notif: 'PS S.A L',          leitos: L('ps_sa', 4, 8) },
         { nome: 'Isolamento',                  censo: 'ISOLAMENTO',    notif: 'PS ISOLAMENTO L',   leitos: L('ps_iso', 9, 10) },
         { nome: 'Sutura (Iso)',                censo: 'SUTURA (ISO)',  notif: 'PS SUTURA ISO ',    leitos: L('ps_sutiso', 1, 1) },
-        { nome: 'Sala de Estabilização (ECG)', censo: 'ESTABILIZACAO', notif: 'PS ESTABILIZAÇÃO ', leitos: L('ps_ecg', 1, 2) },
+        { nome: 'Sala de Estabilização (ECG)', censo: 'ESTABILIZACAO', notif: 'PS ESTABILIZAÇÃO ', leitos: L('ps_ecg', 1, 2), nspDiario: true },
         { nome: 'Sutura',                      censo: 'SUTURA',        notif: 'PS SUTURA ',        leitos: L('ps_sut', 1, 1) },
         { nome: 'Poltronas',                   censo: 'POLTRONA',      notif: 'PS POLTRONA ',      leitos: L('ps_pol', 1, 4, n => 'POLTRONA ' + pad(n)) },
         { nome: 'Cadeiras',                    censo: 'CADEIRA',       notif: 'PS CADEIRA ',       leitos: L('ps_cad', 1, 5, n => 'CADEIRA ' + pad(n)) }
